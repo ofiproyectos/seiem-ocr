@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.pyc
+.env
+uploads/*
+!uploads/.gitkeep
+exports/*
+!exports/.gitkeep
+node_modules/
+dist/
+frontend/node_modules/
+frontend/dist/
+resultado*.json
+.pytest_cache/
+.ruff_cache/

@@ -1,0 +1,13 @@
+numpy
+opencv-python
+pytesseract
+PyMuPDF
+fastapi
+uvicorn[standard]
+sqlalchemy
+pymysql
+pydantic-settings
+python-multipart
+httpx
+pytest
+cryptography
