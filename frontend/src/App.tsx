@@ -5,6 +5,8 @@ import './App.css'
 
 type View = 'solicitante' | 'revision'
 type DocType = 'ine' | 'acta'
+type FlashKind = 'loading' | 'success' | 'error' | 'info'
+type FlashMessage = { kind: FlashKind; text: string; warnings?: string[] } | null
 
 type Address = {
   cp: string
@@ -17,9 +19,15 @@ type Address = {
 }
 
 type PersonName = {
-  apellidoPaterno: string
-  apellidoMaterno: string
+  apellidos: string
   nombres: string
+}
+
+type ActaName = {
+  nombres?: string | null
+  primer_apellido?: string | null
+  segundo_apellido?: string | null
+  nombre_completo?: string | null
 }
 
 type Reference = {
@@ -102,8 +110,7 @@ const emptyAddress: Address = {
 }
 
 const emptyName: PersonName = {
-  apellidoPaterno: '',
-  apellidoMaterno: '',
+  apellidos: '',
   nombres: '',
 }
 
@@ -115,8 +122,26 @@ function cleanUpper(value: string) {
   return value.replace(/\s+/g, ' ').trim().toUpperCase()
 }
 
+function cleanText(value: string) {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function normalizeDeep<T>(value: T, keyName = ''): T {
+  if (typeof value === 'string') {
+    const cleaned = cleanText(value)
+    return (keyName.toLowerCase().includes('correo') ? cleaned : cleaned.toUpperCase()) as T
+  }
+  if (Array.isArray(value)) return value.map((item) => normalizeDeep(item, keyName)) as T
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nested]) => [key, normalizeDeep(nested, key)]),
+    ) as T
+  }
+  return value
+}
+
 function composeName(value: PersonName) {
-  return [value.apellidoPaterno, value.apellidoMaterno, value.nombres]
+  return [value.apellidos, value.nombres]
     .map(cleanUpper)
     .filter(Boolean)
     .join(' ')
@@ -126,21 +151,50 @@ function splitStoredName(value?: string | null): PersonName {
   const parts = cleanUpper(value ?? '').split(' ').filter(Boolean)
   if (parts.length >= 3) {
     return {
-      apellidoPaterno: parts[0],
-      apellidoMaterno: parts[1],
+      apellidos: parts.slice(0, 2).join(' '),
       nombres: parts.slice(2).join(' '),
     }
   }
   return { ...emptyName, nombres: cleanUpper(value ?? '') }
 }
 
+function splitNaturalName(value?: string | null): PersonName {
+  const parts = cleanUpper(value ?? '').split(' ').filter(Boolean)
+  if (parts.length >= 3) {
+    return {
+      apellidos: parts.slice(-2).join(' '),
+      nombres: parts.slice(0, -2).join(' '),
+    }
+  }
+  return { ...emptyName, nombres: cleanUpper(value ?? '') }
+}
+
+function splitActaName(value?: ActaName | null): PersonName {
+  const apellidos = [value?.primer_apellido, value?.segundo_apellido]
+    .map((part) => cleanUpper(part ?? ''))
+    .filter(Boolean)
+    .join(' ')
+  const nombres = cleanUpper(value?.nombres ?? '')
+  if (apellidos || nombres) return { apellidos, nombres }
+  return splitNaturalName(value?.nombre_completo)
+}
+
 function mergeName(parts?: Partial<PersonName>, fullName?: string | null): PersonName {
   const fallback = splitStoredName(fullName)
+  const legacyParts = parts as Partial<PersonName> & { apellidoPaterno?: string; apellidoMaterno?: string }
+  const legacyApellidos = [legacyParts?.apellidoPaterno, legacyParts?.apellidoMaterno].map((value) => value ?? '').join(' ').trim()
   return {
-    apellidoPaterno: parts?.apellidoPaterno ?? fallback.apellidoPaterno,
-    apellidoMaterno: parts?.apellidoMaterno ?? fallback.apellidoMaterno,
+    apellidos: parts?.apellidos ?? (legacyApellidos || fallback.apellidos),
     nombres: parts?.nombres ?? fallback.nombres,
   }
+}
+
+function referenceLabel(references: Reference[], index: number) {
+  const current = references[index]
+  const number = references
+    .slice(0, index + 1)
+    .filter((reference) => reference.parentesco === current.parentesco).length
+  return `${current.parentesco} ${number}`
 }
 
 const emptyForm: CaptureForm = {
@@ -267,9 +321,9 @@ function applyExtraction(current: CaptureForm, tipo: DocType, raw: any): Capture
   const currentYear = /^\d{4}$/.test(current.anioActa) ? current.anioActa : ''
   const extractedYear = extractYear(registro.fecha_registro)
   const extractedName = persona.nombre_completo || ''
-  const nombrePartes = current.nombreCompleto ? current.nombrePartes : splitStoredName(extractedName)
-  const padreNombrePartes = current.padre ? current.padreNombrePartes : splitStoredName(filiacion[0]?.nombre_completo)
-  const madreNombrePartes = current.madre ? current.madreNombrePartes : splitStoredName(filiacion[1]?.nombre_completo)
+  const nombrePartes = current.nombreCompleto ? current.nombrePartes : splitActaName(persona)
+  const padreNombrePartes = current.padre ? current.padreNombrePartes : splitActaName(filiacion[0])
+  const madreNombrePartes = current.madre ? current.madreNombrePartes : splitActaName(filiacion[1])
   return {
     ...current,
     curp: current.curp || datos.curp || persona.curp || '',
@@ -316,15 +370,30 @@ function AddressFields({ value, onChange, label }: { value: Address; onChange: (
   const [options, setOptions] = useState<CpOption[]>([])
   const [cpError, setCpError] = useState('')
   const [loadingCp, setLoadingCp] = useState(false)
-  const selectedOptionIndex = options.findIndex(
+  const currentOption = value.colonia
+    ? {
+        asentamiento: value.colonia,
+        municipio: value.municipio,
+        estado: value.estado,
+      }
+    : null
+  const hasCurrentInOptions = options.some(
     (option) =>
-      option.asentamiento === value.colonia &&
-      option.municipio === value.municipio &&
-      option.estado === value.estado,
+      sameText(option.asentamiento, value.colonia) &&
+      sameText(option.municipio, value.municipio) &&
+      sameText(option.estado, value.estado),
+  )
+  const displayedOptions = currentOption && !hasCurrentInOptions ? [currentOption, ...options] : options
+  const selectedOptionIndex = displayedOptions.findIndex(
+    (option) =>
+      sameText(option.asentamiento, value.colonia) &&
+      sameText(option.municipio, value.municipio) &&
+      sameText(option.estado, value.estado),
   )
 
   function update(field: keyof Address, next: string) {
-    const nextValue = { ...value, [field]: next }
+    const normalized = field === 'cp' ? next : next.toUpperCase()
+    const nextValue = { ...value, [field]: normalized }
     if (field === 'cp') {
       setOptions([])
       setCpError('')
@@ -358,9 +427,9 @@ function AddressFields({ value, onChange, label }: { value: Address; onChange: (
   function applyOption(option: CpOption) {
     onChange({
       ...value,
-      colonia: option.asentamiento,
-      municipio: option.municipio,
-      estado: option.estado,
+      colonia: option.asentamiento.toUpperCase(),
+      municipio: option.municipio.toUpperCase(),
+      estado: option.estado.toUpperCase(),
     })
   }
 
@@ -384,11 +453,11 @@ function AddressFields({ value, onChange, label }: { value: Address; onChange: (
       <label className="colony-select">Colonia o delegacion
         <select
           value={selectedOptionIndex >= 0 ? String(selectedOptionIndex) : ''}
-          disabled={options.length === 0}
-          onChange={(event) => applyOption(options[Number(event.target.value)])}
+          disabled={displayedOptions.length === 0}
+          onChange={(event) => applyOption(displayedOptions[Number(event.target.value)])}
         >
-          <option value="">{options.length ? 'Selecciona colonia' : ''}</option>
-          {options.map((option, index) => (
+          <option value="">{displayedOptions.length ? 'Selecciona colonia' : ''}</option>
+          {displayedOptions.map((option, index) => (
             <option value={index} key={`${option.asentamiento}-${index}`}>
               {option.asentamiento}
             </option>
@@ -400,6 +469,10 @@ function AddressFields({ value, onChange, label }: { value: Address; onChange: (
       {cpError && <p className="field-error">{cpError}</p>}
     </fieldset>
   )
+}
+
+function sameText(left?: string | null, right?: string | null) {
+  return cleanUpper(left ?? '') === cleanUpper(right ?? '')
 }
 
 function NameFields({
@@ -422,8 +495,7 @@ function NameFields({
   return (
     <fieldset className="name-block">
       <legend>{label}</legend>
-      <label>Apellido paterno<input disabled={disabled} value={value.apellidoPaterno} onChange={(event) => update('apellidoPaterno', event.target.value)} /></label>
-      <label>Apellido materno<input disabled={disabled} value={value.apellidoMaterno} onChange={(event) => update('apellidoMaterno', event.target.value)} /></label>
+      <label>Apellidos<input disabled={disabled} value={value.apellidos} onChange={(event) => update('apellidos', event.target.value)} /></label>
       <label>Nombre(s)<input disabled={disabled} value={value.nombres} onChange={(event) => update('nombres', event.target.value)} /></label>
     </fieldset>
   )
@@ -476,6 +548,43 @@ function CivilStatusFields({
   )
 }
 
+function StatusModal({ message, onClose }: { message: NonNullable<FlashMessage>; onClose: () => void }) {
+  const isLoading = message.kind === 'loading'
+  const title =
+    message.kind === 'loading'
+      ? 'Procesando'
+      : message.kind === 'success'
+        ? 'Listo'
+        : message.kind === 'error'
+          ? 'No se pudo completar'
+          : 'Aviso'
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-live="assertive">
+      <div className={`status-modal ${message.kind}`}>
+        {isLoading ? <span className="modal-spinner" /> : message.kind === 'error' ? <AlertCircle size={34} /> : <span className="modal-check">✓</span>}
+        <h2>{title}</h2>
+        <p>{message.text}</p>
+        {message.warnings && message.warnings.length > 0 && (
+          <div className="modal-warnings">
+            <strong>Advertencias detectadas</strong>
+            <ul>
+              {message.warnings.map((warning, index) => (
+                <li key={index}>{warning}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {!isLoading && (
+          <button className="primary" type="button" onClick={onClose}>
+            Aceptar
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const view: View = window.location.pathname.replace(/\/$/, '') === '/revision' ? 'revision' : 'solicitante'
   const [requestForm, setRequestForm] = useState<CaptureForm>(mergeForm())
@@ -490,9 +599,8 @@ function App() {
   const [pagina, setPagina] = useState(1)
   const [file, setFile] = useState<File | null>(null)
   const [lastExtraction, setLastExtraction] = useState<any>(null)
-  const [status, setStatus] = useState('')
-  const [error, setError] = useState('')
-  const [saving, setSaving] = useState(false)
+  const [flash, setFlash] = useState<FlashMessage>(null)
+  const [busyAction, setBusyAction] = useState('')
 
   const warnings = useMemo(() => {
     const value = lastExtraction?.resultado?.advertencias
@@ -502,6 +610,10 @@ function App() {
   useEffect(() => {
     if (view === 'revision' && token) loadSolicitudes()
   }, [view, token])
+
+  function showMessage(kind: FlashKind, text: string, warnings?: string[]) {
+    setFlash({ kind, text, warnings })
+  }
 
   function setRequestField<K extends keyof CaptureForm>(field: K, value: CaptureForm[K]) {
     setRequestForm((current) => ({ ...current, [field]: value }))
@@ -530,56 +642,59 @@ function App() {
   }
 
   async function submitSolicitud() {
-    setSaving(true)
-    setError('')
+    setBusyAction('submit')
+    showMessage('loading', 'Enviando solicitud...')
+    const cleanForm = normalizeDeep(requestForm)
     const response = await fetch('/api/solicitudes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         estado: 'enviada',
-        curp: requestForm.curp || null,
-        nombre_completo: requestForm.nombreCompleto || null,
-        correo_electronico: requestForm.correoElectronico || null,
-        datos: requestForm,
+        curp: cleanForm.curp || null,
+        nombre_completo: cleanForm.nombreCompleto || null,
+        correo_electronico: cleanForm.correoElectronico || null,
+        datos: cleanForm,
         extracciones: [],
       }),
     })
     const payload = await readApiResponse(response)
-    setSaving(false)
+    setBusyAction('')
     if (!response.ok) {
-      setError(payload.detail ?? 'No se pudo enviar la solicitud.')
+      showMessage('error', payload.detail ?? 'No se pudo enviar la solicitud.')
       return
     }
     setRequestForm(mergeForm())
-    setStatus(`Solicitud enviada. Folio tecnico: ${payload.id}`)
+    showMessage('success', `Solicitud enviada. Folio técnico: ${payload.id}`)
   }
 
   async function loginOperator(event: FormEvent) {
     event.preventDefault()
-    setError('')
+    setBusyAction('login')
+    showMessage('loading', 'Validando acceso...')
     const response = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(login),
     })
     const payload = await readApiResponse(response)
+    setBusyAction('')
     if (!response.ok) {
-      setError(payload.detail ?? 'No se pudo iniciar sesion.')
+      showMessage('error', payload.detail ?? 'No se pudo iniciar sesión.')
       return
     }
     localStorage.setItem('revisionToken', payload.token)
     localStorage.setItem('revisionUser', payload.username)
     setToken(payload.token)
     setUsername(payload.username)
-    setStatus(`Sesión iniciada como ${payload.username}`)
+    showMessage('success', `Sesión iniciada como ${payload.username}`)
   }
 
   async function loadSolicitudes() {
-    setError('')
+    if (!token) return
     const response = await fetch('/api/solicitudes', { headers: authHeaders(token) })
     const payload = await readApiResponse(response)
     if (!response.ok) {
-      setError(payload.detail ?? 'No se pudieron cargar solicitudes.')
+      showMessage('error', payload.detail ?? 'No se pudieron cargar solicitudes.')
       return
     }
     setSolicitudes(payload)
@@ -597,12 +712,12 @@ function App() {
   async function handleExtraction(event: FormEvent) {
     event.preventDefault()
     if (!file) {
-      setError('Selecciona una imagen o PDF.')
+      showMessage('error', 'Selecciona una imagen o PDF.')
       return
     }
 
-    setStatus('Analizando documento...')
-    setError('')
+    setBusyAction('extract')
+    showMessage('loading', 'Analizando documento...')
 
     const body = new FormData()
     body.append('tipo', tipo)
@@ -615,54 +730,64 @@ function App() {
       body,
     })
     const payload = await readApiResponse(response)
+    setBusyAction('')
     if (!response.ok) {
-      setStatus('')
-      setError(payload.detail ?? 'No se pudo analizar el documento.')
+      showMessage('error', payload.detail ?? 'No se pudo analizar el documento.')
       return
     }
     setLastExtraction(payload)
     setOperatorForm((current) => applyExtraction(current, tipo, payload))
-    setStatus('Extracción aplicada al formulario de revision.')
+    const extractionWarnings = Array.isArray(payload?.resultado?.advertencias) ? payload.resultado.advertencias : []
+    showMessage(
+      'success',
+      extractionWarnings.length
+        ? 'Extracción aplicada al formulario de revisión. Revisa las advertencias antes de guardar.'
+        : 'Extracción aplicada al formulario de revisión.',
+      extractionWarnings,
+    )
   }
 
   async function saveReview() {
     if (!selected) return
-    setSaving(true)
-    setError('')
+    setBusyAction('save')
+    showMessage('loading', 'Guardando revisión...')
+    const cleanForm = normalizeDeep(operatorForm)
     const extracciones = lastExtraction ? [...(selected.extracciones ?? []), lastExtraction] : selected.extracciones ?? []
     const response = await fetch(`/api/solicitudes/${selected.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
       body: JSON.stringify({
         estado: 'revisada',
-        curp: operatorForm.curp || null,
-        nombre_completo: operatorForm.nombreCompleto || null,
-        correo_electronico: operatorForm.correoElectronico || null,
-        datos: operatorForm,
+        curp: cleanForm.curp || null,
+        nombre_completo: cleanForm.nombreCompleto || null,
+        correo_electronico: cleanForm.correoElectronico || null,
+        datos: cleanForm,
         extracciones,
-        notas_operador: operatorNotes,
+        notas_operador: cleanText(operatorNotes).toUpperCase(),
       }),
     })
     const payload = await readApiResponse(response)
-    setSaving(false)
+    setBusyAction('')
     if (!response.ok) {
-      setError(payload.detail ?? 'No se pudo guardar la revision.')
+      showMessage('error', payload.detail ?? 'No se pudo guardar la revisión.')
       return
     }
-    setStatus(`Revisión guardada por ${payload.revisado_por}`)
+    showMessage('success', `Revisión guardada por ${payload.revisado_por}`)
     setSelected(payload)
     setSolicitudes((items) => items.map((item) => (item.id === payload.id ? payload : item)))
   }
 
   async function downloadExcel() {
     if (!selected) return
-    setError('')
+    setBusyAction('excel')
+    showMessage('loading', 'Generando Excel...')
     const response = await fetch(`/api/solicitudes/${selected.id}/excel`, {
       headers: authHeaders(token),
     })
     if (!response.ok) {
       const payload = await readApiResponse(response)
-      setError(payload.detail ?? 'No se pudo generar el Excel.')
+      setBusyAction('')
+      showMessage('error', payload.detail ?? 'No se pudo generar el Excel.')
       return
     }
     const blob = await response.blob()
@@ -674,6 +799,8 @@ function App() {
     link.click()
     link.remove()
     URL.revokeObjectURL(url)
+    setBusyAction('')
+    showMessage('success', 'Excel descargado.')
   }
 
   return (
@@ -687,8 +814,7 @@ function App() {
           {view === 'revision' && token && <span className="operator-badge"><Lock size={16} /> {username}</span>}
         </header>
 
-        {error && <p className="error"><AlertCircle size={17} />{error}</p>}
-        {status && <p className="notice">{status}</p>}
+        {flash && <StatusModal message={flash} onClose={() => setFlash(null)} />}
 
         {view === 'solicitante' ? (
           <SolicitanteForm
@@ -696,7 +822,7 @@ function App() {
             setField={setRequestField}
             setAddress={(domicilio) => setRequestField('domicilio', domicilio)}
             updateReference={updateReference}
-            saving={saving}
+            saving={busyAction === 'submit'}
             onSubmit={submitSolicitud}
           />
         ) : !token ? (
@@ -704,25 +830,47 @@ function App() {
             <div className="section-title"><Lock size={20} /><h2>Acceso de revisión</h2></div>
             <label>Usuario<input value={login.username} onChange={(event) => setLogin({ ...login, username: event.target.value })} /></label>
             <label>Contraseña<input type="password" value={login.password} onChange={(event) => setLogin({ ...login, password: event.target.value })} /></label>
-            <button className="primary" type="submit">Entrar</button>
+            <button className="primary" type="submit" disabled={busyAction === 'login'}>
+              {busyAction === 'login' ? 'Validando...' : 'Entrar'}
+            </button>
           </form>
         ) : (
           <section className="operator-grid">
             <div className="requests-list">
-              <div className="section-title"><ListChecks size={20} /><h2>Solicitudes</h2></div>
+              <div className="requests-header">
+                <div className="section-title"><ListChecks size={20} /><h2>Solicitudes</h2></div>
+                <span>{solicitudes.length} registro{solicitudes.length === 1 ? '' : 's'}</span>
+              </div>
               <button className="secondary" type="button" onClick={loadSolicitudes}>Actualizar lista</button>
-              {solicitudes.map((solicitud) => (
-                <button className={selected?.id === solicitud.id ? 'request selected' : 'request'} key={solicitud.id} onClick={() => selectSolicitud(solicitud)}>
-                  <strong>{solicitud.nombre_completo || solicitud.datos?.nombreCompleto || 'Sin nombre'}</strong>
-                  <span>{solicitud.estado}</span>
-                  <small>{new Date(solicitud.created_at).toLocaleString()}</small>
-                </button>
-              ))}
+              <div className="requests-stack">
+                {solicitudes.map((solicitud) => (
+                  <button className={selected?.id === solicitud.id ? 'request selected' : 'request'} key={solicitud.id} onClick={() => selectSolicitud(solicitud)}>
+                    <strong>{solicitud.nombre_completo || solicitud.datos?.nombreCompleto || 'Sin nombre'}</strong>
+                    <span>{solicitud.estado}</span>
+                    <small>{new Date(solicitud.created_at).toLocaleString()}</small>
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="review-panel">
               {selected ? (
                 <>
+                  <section className="selected-summary">
+                    <div>
+                      <span>Solicitud seleccionada</span>
+                      <strong>{selected.nombre_completo || selected.datos?.nombreCompleto || 'Sin nombre'}</strong>
+                    </div>
+                    <div>
+                      <span>Estado</span>
+                      <strong>{selected.estado}</strong>
+                    </div>
+                    <div>
+                      <span>Fecha</span>
+                      <strong>{new Date(selected.created_at).toLocaleString()}</strong>
+                    </div>
+                  </section>
+
                   <section className="document-panel">
                     <form className="upload-panel" onSubmit={handleExtraction}>
                       <div className="section-title"><FileSearch size={20} /><h2>Análisis de documentos</h2></div>
@@ -736,7 +884,9 @@ function App() {
                         <input type="file" accept=".jpg,.jpeg,.png,.bmp,.tif,.tiff,.webp,.pdf" onChange={(event: ChangeEvent<HTMLInputElement>) => setFile(event.target.files?.[0] ?? null)} />
                       </label>
                       {tipo === 'ine' && <label className="inline-label">Pagina PDF<input type="number" min="1" value={pagina} onChange={(event) => setPagina(Number(event.target.value))} /></label>}
-                      <button className="secondary" type="submit"><FileSearch size={18} />Analizar documento</button>
+                      <button className="secondary" type="submit" disabled={busyAction === 'extract'}>
+                        <FileSearch size={18} />{busyAction === 'extract' ? 'Analizando...' : 'Analizar documento'}
+                      </button>
                       {warnings.length > 0 && <ul className="warnings">{warnings.map((warning: string, index: number) => <li key={index}>{warning}</li>)}</ul>}
                     </form>
                   </section>
@@ -749,7 +899,8 @@ function App() {
                     setNotes={setOperatorNotes}
                     onSave={saveReview}
                     onDownloadExcel={downloadExcel}
-                    saving={saving}
+                    saving={busyAction === 'save'}
+                    downloading={busyAction === 'excel'}
                   />
                 </>
               ) : (
@@ -792,7 +943,7 @@ function SolicitanteForm({
         />
         <div className="form-grid four">
           <label>RFC<input value={form.rfc} onChange={(event) => setField('rfc', event.target.value.toUpperCase())} /></label>
-          <label>Telefono<input value={form.telefono} onChange={(event) => setField('telefono', event.target.value)} /></label>
+          <label>Telefono<input value={form.telefono} onChange={(event) => setField('telefono', event.target.value.replace(/\D/g, ''))} /></label>
           <label>Correo electronico<input type="email" value={form.correoElectronico} onChange={(event) => setField('correoElectronico', event.target.value)} /></label>
           <CivilStatusFields
             estadoCivil={form.estadoCivil}
@@ -816,7 +967,7 @@ function SolicitanteForm({
         <div className="reference-grid">
           {form.referencias.map((reference, index) => (
             <div className="reference-item" key={index}>
-              <strong>{reference.parentesco} {index + 1}</strong>
+              <strong>{referenceLabel(form.referencias, index)}</strong>
               <NameFields
                 label="Nombre"
                 value={reference.nombrePartes}
@@ -847,6 +998,7 @@ function FullFiliacionForm({
   onSave,
   onDownloadExcel,
   saving,
+  downloading,
 }: {
   form: CaptureForm
   setField: <K extends keyof CaptureForm>(field: K, value: CaptureForm[K]) => void
@@ -856,6 +1008,7 @@ function FullFiliacionForm({
   onSave: () => void
   onDownloadExcel: () => void
   saving: boolean
+  downloading: boolean
 }) {
   const rasgoOptions: Record<keyof CaptureForm['rasgos'], string[]> = {
     tonoPiel: ['Claro', 'Mediano', 'Obscuro'],
@@ -876,8 +1029,8 @@ function FullFiliacionForm({
         <div className="form-grid four">
           <label>Filiacion / RFC<input value={form.rfc} onChange={(event) => setField('rfc', event.target.value.toUpperCase())} /></label>
           <label>CURP<input value={form.curp} onChange={(event) => setField('curp', event.target.value.toUpperCase())} /></label>
-          <label>Clave de cobro<input value={form.claveCobro} onChange={(event) => setField('claveCobro', event.target.value)} /></label>
-          <label>Descripcion de la clave<input value={form.descripcionClave} onChange={(event) => setField('descripcionClave', event.target.value)} /></label>
+          <label>Clave de cobro<input value={form.claveCobro} onChange={(event) => setField('claveCobro', event.target.value.toUpperCase())} /></label>
+          <label>Descripcion de la clave<input value={form.descripcionClave} onChange={(event) => setField('descripcionClave', event.target.value.toUpperCase())} /></label>
           <label>Lugar<input value={form.lugar} onChange={(event) => setField('lugar', event.target.value.toUpperCase())} /></label>
           <label>Fecha<input type="date" value={form.fechaFiliacion} onChange={(event) => setField('fechaFiliacion', event.target.value)} /></label>
         </div>
@@ -895,13 +1048,13 @@ function FullFiliacionForm({
         />
         <div className="form-grid four">
           <label>Fecha nacimiento<input type="date" value={form.fechaNacimiento} onChange={(event) => setField('fechaNacimiento', event.target.value)} /></label>
-          <label>Lugar nacimiento<input value={form.lugarNacimiento} onChange={(event) => setField('lugarNacimiento', event.target.value)} /></label>
-          <label>Sexo<input value={form.sexo} onChange={(event) => setField('sexo', event.target.value)} /></label>
-          <label>No. acta<input value={form.noActa} onChange={(event) => setField('noActa', event.target.value)} /></label>
+          <label>Lugar nacimiento<input value={form.lugarNacimiento} onChange={(event) => setField('lugarNacimiento', event.target.value.toUpperCase())} /></label>
+          <label>Sexo<input value={form.sexo} onChange={(event) => setField('sexo', event.target.value.toUpperCase())} /></label>
+          <label>No. acta<input value={form.noActa} onChange={(event) => setField('noActa', event.target.value.toUpperCase())} /></label>
           <label>Anio<input value={form.anioActa} maxLength={4} onChange={(event) => setField('anioActa', event.target.value.replace(/\D/g, '').slice(0, 4))} /></label>
-          <label>Libro<input value={form.libro} onChange={(event) => setField('libro', event.target.value)} /></label>
-          <label>Clase<input value={form.clase} onChange={(event) => setField('clase', event.target.value)} /></label>
-          <label>Cartilla S.M.N.<input value={form.cartillaSmn} onChange={(event) => setField('cartillaSmn', event.target.value)} /></label>
+          <label>Libro<input value={form.libro} onChange={(event) => setField('libro', event.target.value.toUpperCase())} /></label>
+          <label>Clase<input value={form.clase} onChange={(event) => setField('clase', event.target.value.toUpperCase())} /></label>
+          <label>Cartilla S.M.N.<input value={form.cartillaSmn} onChange={(event) => setField('cartillaSmn', event.target.value.toUpperCase())} /></label>
         </div>
         <div className="form-grid two name-pair-grid">
           <NameFields
@@ -937,7 +1090,7 @@ function FullFiliacionForm({
             }}
           />
           <label>Correo electronico<input value={form.correoElectronico} onChange={(event) => setField('correoElectronico', event.target.value)} /></label>
-          <label>Telefono<input value={form.telefono} onChange={(event) => setField('telefono', event.target.value)} /></label>
+          <label>Telefono<input value={form.telefono} onChange={(event) => setField('telefono', event.target.value.replace(/\D/g, ''))} /></label>
         </div>
       </section>
 
@@ -950,7 +1103,7 @@ function FullFiliacionForm({
         <div className="reference-grid">
           {form.referencias.map((reference, index) => (
             <div className="reference-item" key={index}>
-              <strong>{reference.parentesco} {index + 1}</strong>
+              <strong>{referenceLabel(form.referencias, index)}</strong>
               <NameFields
                 label="Nombre"
                 value={reference.nombrePartes}
@@ -979,7 +1132,7 @@ function FullFiliacionForm({
                   ))}
                 </select>
               ) : (
-                <input value={value} onChange={(event) => setField('rasgos', { ...form.rasgos, [key]: event.target.value })} />
+                <input value={value} onChange={(event) => setField('rasgos', { ...form.rasgos, [key]: event.target.value.toUpperCase() })} />
               )}
             </label>
           ))}
@@ -988,11 +1141,13 @@ function FullFiliacionForm({
 
       <section className="form-section">
         <div className="section-title"><h2>Notas de revision</h2></div>
-        <label className="notes-label">Notas de revisión<textarea value={notes} onChange={(event) => setNotes(event.target.value)} /></label>
+        <label className="notes-label">Notas de revisión<textarea value={notes} onChange={(event) => setNotes(event.target.value.toUpperCase())} /></label>
       </section>
 
       <div className="actions-row">
-        <button className="secondary" type="button" onClick={onDownloadExcel}><Download size={18} />Descargar Excel</button>
+        <button className="secondary" type="button" onClick={onDownloadExcel} disabled={downloading}>
+          <Download size={18} />{downloading ? 'Generando...' : 'Descargar Excel'}
+        </button>
         <button className="primary" type="button" onClick={onSave} disabled={saving}><Save size={18} />{saving ? 'Guardando...' : 'Guardar revision'}</button>
       </div>
     </>

@@ -55,8 +55,71 @@ def cargar_imagen(ruta):
     return leer_imagen(ruta)
 
 
+def ordenar_puntos(puntos):
+    puntos = puntos.astype(np.float32)
+    suma = puntos.sum(axis=1)
+    diferencia = np.diff(puntos, axis=1).ravel()
+    return puntos[[suma.argmin(), diferencia.argmin(), suma.argmax(), diferencia.argmax()]]
+
+
+def rectificar_cuadrilatero(imagen, puntos):
+    orden = ordenar_puntos(puntos)
+    if len(np.unique(orden, axis=0)) != 4:
+        return None
+    tl, tr, br, bl = orden
+    ancho = max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl))
+    alto = max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr))
+    if ancho < 40 or alto < 40:
+        return None
+    destino = np.float32([[0, 0], [ancho - 1, 0], [ancho - 1, alto - 1], [0, alto - 1]])
+    return cv2.warpPerspective(imagen, cv2.getPerspectiveTransform(orden, destino), (round(ancho), round(alto)), borderValue=(255, 255, 255))
+
+
+def detectar_documento_rectangular(imagen, aspecto_min, aspecto_max, area_min=0.025):
+    """Localiza el rectangulo dominante y lo rectifica si su aspecto coincide."""
+    alto, ancho = imagen.shape[:2]
+    escala = min(1.0, 1600 / max(alto, ancho))
+    pequena = cv2.resize(imagen, None, fx=escala, fy=escala)
+    gris = cv2.cvtColor(pequena, cv2.COLOR_BGR2GRAY)
+    candidatos_mascara = []
+    for mascara in (
+        cv2.Canny(cv2.GaussianBlur(gris, (5, 5), 0), 30, 90),
+        cv2.threshold(cv2.GaussianBlur(gris, (5, 5), 0), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
+    ):
+        mascara = cv2.morphologyEx(mascara, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+        contornos, _ = cv2.findContours(mascara, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        candidatos_mascara.extend(contornos)
+    candidatos = []
+    for contorno in candidatos_mascara:
+        area = cv2.contourArea(cv2.convexHull(contorno))
+        if area < gris.size * area_min:
+            continue
+        perimetro = cv2.arcLength(contorno, True)
+        poligono = cv2.approxPolyDP(contorno, .025 * perimetro, True)
+        if len(poligono) != 4 or not cv2.isContourConvex(poligono):
+            x, y, w, h = cv2.boundingRect(contorno)
+            relleno = area / max(1, w * h)
+            if relleno < .72:
+                continue
+            poligono = np.array([[[x, y]], [[x + w, y]], [[x + w, y + h]], [[x, y + h]]], dtype=np.float32)
+        puntos = poligono[:, 0].astype(np.float32) / escala
+        orden = ordenar_puntos(puntos)
+        w = max(np.linalg.norm(orden[1] - orden[0]), np.linalg.norm(orden[2] - orden[3]))
+        h = max(np.linalg.norm(orden[3] - orden[0]), np.linalg.norm(orden[2] - orden[1]))
+        aspecto = w / h
+        if aspecto_min <= aspecto <= aspecto_max:
+            candidatos.append((area, puntos))
+    if not candidatos:
+        return None
+    _, puntos = max(candidatos, key=lambda item: item[0])
+    return rectificar_cuadrilatero(imagen, puntos)
+
+
 def detectar_credencial(imagen):
     """Busca un contorno de tarjeta horizontal y elimina el fondo exterior."""
+    rectificada = detectar_documento_rectangular(imagen, 1.35, 1.9, area_min=0.025)
+    if rectificada is not None:
+        return rectificada, []
     alto, ancho = imagen.shape[:2]
     escala = min(1.0, 1600 / max(alto, ancho))
     pequena = cv2.resize(imagen, None, fx=escala, fy=escala)

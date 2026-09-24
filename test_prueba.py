@@ -91,6 +91,15 @@ class ExtraccionTests(unittest.TestCase):
         self.assertLess(abs(tarjeta.shape[0] - 500), 10)
         self.assertFalse(avisos)
 
+    def test_rectifica_tarjeta_con_perspectiva(self):
+        imagen = np.full((900, 1100, 3), 235, dtype=np.uint8)
+        puntos = np.array([[120, 250], [930, 205], [990, 700], [80, 760]], dtype=np.int32)
+        cv2.fillConvexPoly(imagen, puntos, (70, 70, 70))
+        tarjeta, avisos = detectar_credencial(imagen)
+        self.assertGreater(tarjeta.shape[1], tarjeta.shape[0])
+        self.assertTrue(1.35 < tarjeta.shape[1] / tarjeta.shape[0] < 1.9)
+        self.assertFalse(avisos)
+
     def test_imagen_sin_tarjeta(self):
         with self.assertRaises(ValueError):
             detectar_credencial(np.full((900, 600, 3), 255, dtype=np.uint8))

@@ -254,7 +254,22 @@ def build_cell_values(datos: dict) -> dict[str, str]:
         )
     )
 
-    return {cell: str(value).upper() for cell, value in values.items() if value not in (None, "")}
+    return {
+        cell: normalize_excel_value(cell, value)
+        for cell, value in values.items()
+        if value not in (None, "")
+    }
+
+
+def normalize_excel_value(cell: str, value) -> str:
+    text = " ".join(str(value).split())
+    if cell == "C23":
+        return text
+    return preserve_address_prefixes(text.upper())
+
+
+def preserve_address_prefixes(text: str) -> str:
+    return text.replace("NO.", "No.").replace("INT.", "Int.")
 
 
 def label_value(label: str, value) -> str:
@@ -269,8 +284,8 @@ def valid_year(value) -> str:
 def format_address(address: dict) -> str:
     parts = [
         address.get("calle"),
-        address.get("numeroExterior"),
-        f"INT. {address.get('numeroInterior')}" if address.get("numeroInterior") else "",
+        f"No. {address.get('numeroExterior')}" if address.get("numeroExterior") else "",
+        f"Int. {address.get('numeroInterior')}" if address.get("numeroInterior") else "",
         address.get("colonia"),
         address.get("municipio"),
         address.get("estado"),

@@ -37,7 +37,8 @@ La ventana utiliza Tkinter, incluido en la instalación de Python de este equipo
 El formato se detecta por el contenido del archivo. El JSON incluye `entrada`
 con formato, cantidad de páginas y, para INE, la página elegida. En INE se
 procesa una página por ejecución; no se mezclan datos del frente y reverso.
-La detección admite una credencial que ocupe una parte pequeña de una hoja.
+La deteccion localiza la credencial dentro de la foto, corrige perspectiva
+moderada y analiza solo el area de la tarjeta.
 
 ## Uso en PowerShell
 
@@ -96,9 +97,11 @@ rellenan datos faltantes a partir de otros documentos.
 .\venv\Scripts\python.exe acta_nacimiento.py "C:\ruta\acta.pdf" --salida resultado_acta.json
 ```
 
-También acepta JPEG/PNG de la página completa. Usa el texto digital del PDF
-cuando está disponible; en páginas escaneadas aplica OCR, incluyendo lectura
-por regiones para tablas y letra pequeña. Para probar la lectura como imagen:
+Tambien acepta JPEG/PNG de la pagina completa. Usa el texto digital del PDF
+cuando esta disponible; en paginas escaneadas aplica OCR con preparacion para
+fotos: localiza la hoja si aparece sobre una mesa o fondo oscuro, corrige una
+perspectiva moderada, normaliza sombras y compara mas de una configuracion de
+Tesseract. Para probar la lectura como imagen:
 
 ```powershell
 .\venv\Scripts\python.exe acta_nacimiento.py "C:\ruta\acta.pdf" --forzar-ocr --salida resultado_acta_ocr.json
@@ -137,11 +140,12 @@ contenido de los QR por separado.
 
 ## Alcance y comprobaciones
 
-La distribución de regiones corresponde al modelo de INE de la imagen de
+La distribucion de regiones corresponde al modelo de INE de la imagen de
 ejemplo: foto a la izquierda, nombre y domicilio al centro, sexo arriba a la
-derecha y fechas en la parte inferior. La tarjeta debe estar horizontal y
-derecha. No corrige rotaciones grandes ni perspectiva fuerte. Otros diseños
-requieren ajustar `REGIONES`. Si ya recortaste la tarjeta, usa `--recortada`.
+derecha y fechas en la parte inferior. El programa intenta detectar la tarjeta
+horizontal dentro de la foto, recortarla y rectificarla antes del OCR. Otros
+disenos, recortes incompletos, reflejos fuertes o rotaciones grandes requieren
+ajustar `REGIONES`. Si ya recortaste la tarjeta, usa `--recortada`.
 
 Probado con los dos archivos proporcionados: la INE pasó de dos advertencias a
 cero con los mismos valores correctos; el acta digital se extrae sin advertencias
@@ -154,12 +158,14 @@ imágenes de los documentos. Se verificó el OCR automático del acta y una INE
 pequeña dentro de una hoja completa, en la página 2. Son simulaciones de un
 escaneo; no sustituyen pruebas con distintas impresoras y escáneres reales.
 
-El extractor de actas está adaptado al formato nacional de la muestra (página
-carta vertical). Las etiquetas guían la separación de columnas; las regiones de
-OCR y QR corresponden a esa distribución. Una imagen debe contener la página
-completa, derecha y sin perspectiva importante. Otros diseños, actas antiguas o
-manuscritas requieren ajustes. La precisión en otras fotografías depende de la
-resolución, reflejos y encuadre. No se promete eliminar todas las advertencias.
+El extractor de actas esta adaptado al formato nacional de pagina carta vertical.
+Las etiquetas guian la separacion de columnas y la deteccion del documento ya no
+depende de encontrar dos titulos exactos: tambien acepta evidencia de campos como
+entidad, municipio, identificador electronico y numero de acta. En fotos reales
+conviene que salga la hoja completa y legible; la preparacion corrige inclinacion
+moderada, sombras y desplazamiento, pero no reconstruye texto borroso, reflejos
+fuertes, recortes incompletos o documentos manuscritos. No se promete eliminar
+todas las advertencias: se conservan para que el operador revise valores dudosos.
 
 Las pruebas usan datos sintéticos y no necesitan los documentos personales ni
 ejecutar Tesseract:
