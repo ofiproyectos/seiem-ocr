@@ -1,4 +1,5 @@
 from datetime import datetime
+from logging import getLogger
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -11,8 +12,10 @@ from backend.app.db.session import get_db
 from backend.app.models import Solicitud
 from backend.app.schemas.solicitud import SolicitudCreate, SolicitudRead, SolicitudUpdate
 from backend.app.services.excel_service import exportar_filiacion_excel
+from backend.app.services.spreadsheet_service import append_review_to_spreadsheet
 
 router = APIRouter(prefix="/solicitudes", tags=["solicitudes"])
+logger = getLogger(__name__)
 
 
 @router.post("", response_model=SolicitudRead)
@@ -95,4 +98,9 @@ def actualizar_solicitud(
         db.rollback()
         raise HTTPException(status_code=503, detail="MySQL no esta disponible o la configuracion es incorrecta.") from exc
     db.refresh(solicitud)
+    if solicitud.estado == "revisada":
+        try:
+            append_review_to_spreadsheet(solicitud)
+        except Exception as exc:
+            logger.warning("No se pudo enviar la revision a Google Sheets: %s", exc)
     return solicitud

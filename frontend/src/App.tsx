@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
-import { AlertCircle, ArrowLeft, Download, FileSearch, ListChecks, Lock, RefreshCw, Save, Upload, UserRound } from 'lucide-react'
+import { AlertCircle, ArrowLeft, Camera, Download, FileSearch, ListChecks, Lock, RefreshCw, RotateCcw, Save, Trash2, Upload, UserRound } from 'lucide-react'
 import './App.css'
 
 type View = 'solicitante' | 'revision'
@@ -37,6 +37,14 @@ type Reference = {
   parentesco: string
 }
 
+type PhotoSet = {
+  frenteCuadro: string
+  frenteOvalo: string
+  perfilOvalo: string
+  frente?: string
+  perfil?: string
+}
+
 type CaptureForm = {
   rfc: string
   curp: string
@@ -65,6 +73,7 @@ type CaptureForm = {
   lugar: string
   fechaFiliacion: string
   referencias: Reference[]
+  fotos: PhotoSet
   rasgos: {
     tonoPiel: string
     pelo: string
@@ -129,6 +138,7 @@ function cleanText(value: string) {
 function normalizeDeep<T>(value: T, keyName = ''): T {
   if (typeof value === 'string') {
     const cleaned = cleanText(value)
+    if (cleaned.startsWith('data:image/') || keyName.toLowerCase().includes('foto')) return cleaned as T
     return (keyName.toLowerCase().includes('correo') ? cleaned : cleaned.toUpperCase()) as T
   }
   if (Array.isArray(value)) return value.map((item) => normalizeDeep(item, keyName)) as T
@@ -230,6 +240,11 @@ const emptyForm: CaptureForm = {
     { nombre: '', nombrePartes: { ...emptyName }, domicilio: { ...emptyAddress }, parentesco: 'Familiar' },
     { nombre: '', nombrePartes: { ...emptyName }, domicilio: { ...emptyAddress }, parentesco: 'Familiar' },
   ],
+  fotos: {
+    frenteCuadro: '',
+    frenteOvalo: '',
+    perfilOvalo: '',
+  },
   rasgos: {
     tonoPiel: '',
     pelo: '',
@@ -270,6 +285,13 @@ function mergeForm(data?: Partial<CaptureForm>): CaptureForm {
         domicilio: { ...emptyAddress, ...(merged.referencias?.[index]?.domicilio ?? {}) },
       }
     }),
+    fotos: {
+      ...emptyForm.fotos,
+      ...(merged.fotos ?? {}),
+      frenteCuadro: merged.fotos?.frenteCuadro || merged.fotos?.frente || '',
+      frenteOvalo: merged.fotos?.frenteOvalo || merged.fotos?.frente || '',
+      perfilOvalo: merged.fotos?.perfilOvalo || merged.fotos?.perfil || '',
+    },
     rasgos: { ...emptyForm.rasgos, ...(merged.rasgos ?? {}) },
   }
 }
@@ -601,6 +623,184 @@ function StatusModal({ message, onClose }: { message: NonNullable<FlashMessage>;
           </button>
         )}
       </div>
+    </div>
+  )
+}
+
+function PhotoCapture({
+  label,
+  aspect,
+  shape,
+  value,
+  onChange,
+}: {
+  label: string
+  aspect: number
+  shape: 'square' | 'oval'
+  value: string
+  onChange: (value: string) => void
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const [active, setActive] = useState(false)
+  const [error, setError] = useState('')
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
+  const [deviceId, setDeviceId] = useState('')
+  const [compatMode, setCompatMode] = useState(false)
+
+  useEffect(() => {
+    if (!active || !streamRef.current || !videoRef.current) return
+    videoRef.current.srcObject = streamRef.current
+    videoRef.current.play().catch(() => setError('La camara se abrio, pero el navegador no pudo iniciar la vista previa.'))
+  }, [active])
+
+  useEffect(() => {
+    async function loadInitialDevices() {
+      if (!navigator.mediaDevices?.enumerateDevices) return
+      const found = await navigator.mediaDevices.enumerateDevices()
+      const cameras = found.filter((device) => device.kind === 'videoinput')
+      setDevices(cameras)
+      const obsCam = cameras.find((device) => device.label.toLowerCase().includes('obs'))
+      const droidCam = cameras.find((device) => device.label.toLowerCase().includes('droid'))
+      setDeviceId((obsCam ?? droidCam ?? cameras[0])?.deviceId ?? '')
+    }
+
+    loadInitialDevices()
+    return () => stopCamera()
+  }, [])
+
+  async function loadDevices() {
+    if (!navigator.mediaDevices?.enumerateDevices) return
+    const found = await navigator.mediaDevices.enumerateDevices()
+    const cameras = found.filter((device) => device.kind === 'videoinput')
+    setDevices(cameras)
+    if (!deviceId) {
+      const obsCam = cameras.find((device) => device.label.toLowerCase().includes('obs'))
+      const droidCam = cameras.find((device) => device.label.toLowerCase().includes('droid'))
+      setDeviceId((obsCam ?? droidCam ?? cameras[0])?.deviceId ?? '')
+    }
+  }
+
+  async function startCamera() {
+    setError('')
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('La camara no esta disponible en este navegador.')
+      return
+    }
+    try {
+      const size = compatMode
+        ? { width: { ideal: 640 }, height: { ideal: 480 } }
+        : { width: { ideal: 1280 }, height: { ideal: 720 } }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'user' }),
+          ...size,
+        },
+        audio: false,
+      })
+      streamRef.current = stream
+      setActive(true)
+      await loadDevices()
+    } catch {
+      setError('No se pudo abrir la camara. Si usas DroidCam, confirma que este activo y seleccionado.')
+    }
+  }
+
+  function stopCamera() {
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+    if (videoRef.current) videoRef.current.srcObject = null
+    setActive(false)
+  }
+
+  function capture() {
+    const video = videoRef.current
+    if (!video || !video.videoWidth || !video.videoHeight) return
+    const canvas = document.createElement('canvas')
+    canvas.width = 640
+    canvas.height = Math.round(canvas.width / aspect)
+    const context = canvas.getContext('2d')
+    if (!context) return
+    const sourceAspect = video.videoWidth / video.videoHeight
+    let sx = 0
+    let sy = 0
+    let sw = video.videoWidth
+    let sh = video.videoHeight
+    if (sourceAspect > aspect) {
+      sw = Math.round(video.videoHeight * aspect)
+      sx = Math.round((video.videoWidth - sw) / 2)
+    } else {
+      sh = Math.round(video.videoWidth / aspect)
+      sy = Math.round((video.videoHeight - sh) / 2)
+    }
+    context.fillStyle = '#ffffff'
+    context.fillRect(0, 0, canvas.width, canvas.height)
+    context.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height)
+    onChange(canvas.toDataURL('image/jpeg', 0.9))
+    stopCamera()
+  }
+
+  return (
+    <div className="photo-capture">
+      <div className="photo-card-header">
+        <strong>{label.replace('Tomar ', '')}</strong>
+        <span>{active ? 'Camara activa' : value ? 'Foto capturada' : 'Pendiente'}</span>
+      </div>
+      <div className={`photo-preview ${shape}`}>
+        {active ? (
+          <video ref={videoRef} autoPlay playsInline muted />
+        ) : value ? (
+          <img src={value} alt={label} />
+        ) : (
+          <div className="photo-placeholder">
+            <Camera size={30} />
+            <span>{label}</span>
+          </div>
+        )}
+        <span className="photo-frame-guide" />
+      </div>
+      {!active && (
+        <div className="camera-controls">
+          <button className="secondary" type="button" onClick={loadDevices}>
+            <RefreshCw size={16} /> Actualizar camaras
+          </button>
+          <label className="compat-toggle">
+            <input type="checkbox" checked={compatMode} onChange={(event) => setCompatMode(event.target.checked)} />
+            Modo compatibilidad
+          </label>
+        </div>
+      )}
+      {devices.length > 0 && !active && (
+        <label className="camera-select">Camara
+          <select value={deviceId} onChange={(event) => setDeviceId(event.target.value)}>
+            {devices.map((device, index) => (
+              <option value={device.deviceId} key={device.deviceId}>{device.label || `Camara ${index + 1}`}</option>
+            ))}
+          </select>
+        </label>
+      )}
+      <div className="photo-actions">
+        {!active ? (
+          <button className="secondary" type="button" onClick={startCamera}>
+            <Camera size={17} /> {value ? 'Retomar foto' : label}
+          </button>
+        ) : (
+          <>
+            <button className="primary" type="button" onClick={capture}>
+              <Camera size={17} /> Capturar
+            </button>
+            <button className="secondary" type="button" onClick={stopCamera}>
+              <RotateCcw size={17} /> Cancelar
+            </button>
+          </>
+        )}
+        {value && !active && (
+          <button className="secondary danger" type="button" onClick={() => onChange('')}>
+            <Trash2 size={17} /> Quitar
+          </button>
+        )}
+      </div>
+      {error && <p className="field-error">{error}</p>}
     </div>
   )
 }
@@ -1278,6 +1478,33 @@ function FullFiliacionForm({
               <AddressFields label="Domicilio" value={reference.domicilio} onChange={(domicilio) => updateReference(index, 'domicilio', domicilio)} />
             </div>
           ))}
+        </div>
+      </section>
+
+      <section className="form-section">
+        <div className="section-title"><Camera size={20} /><h2>Fotografias</h2></div>
+        <div className="photo-grid">
+          <PhotoCapture
+            label="Frente cuadro"
+            aspect={1}
+            shape="square"
+            value={form.fotos.frenteCuadro}
+            onChange={(value) => setField('fotos', { ...form.fotos, frenteCuadro: value })}
+          />
+          <PhotoCapture
+            label="Frente ovalo"
+            aspect={0.72}
+            shape="oval"
+            value={form.fotos.frenteOvalo}
+            onChange={(value) => setField('fotos', { ...form.fotos, frenteOvalo: value })}
+          />
+          <PhotoCapture
+            label="Perfil ovalo"
+            aspect={0.72}
+            shape="oval"
+            value={form.fotos.perfilOvalo}
+            onChange={(value) => setField('fotos', { ...form.fotos, perfilOvalo: value })}
+          />
         </div>
       </section>
 

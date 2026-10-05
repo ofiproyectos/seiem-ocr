@@ -93,7 +93,64 @@ FILIACION_TEMPLATE_PATH=C:\Users\UsuarioGEM\Downloads\Plantilla_filiacion.xlsx
 EXPORT_DIR=exports
 ```
 
-## 5. Catalogo de codigos postales
+## 5. Enviar revisiones a Google Sheets
+
+La integracion es opcional. Si no la activas, la app funciona igual.
+
+Cuando el operador guarda una revision, el backend agrega una fila al spreadsheet
+configurado. Si Google Sheets no responde, la revision se guarda en MySQL de
+todas formas y el backend escribe una advertencia en consola.
+
+Configura `.env`:
+
+```text
+GOOGLE_SHEETS_ENABLED=true
+GOOGLE_SHEETS_SPREADSHEET_ID=ID_DEL_SPREADSHEET
+GOOGLE_SHEETS_SHEET_NAME=Revisiones
+GOOGLE_SERVICE_ACCOUNT_FILE=C:\ruta\service-account.json
+```
+
+Tambien puedes usar `GOOGLE_SERVICE_ACCOUNT_JSON` con el JSON completo de la
+cuenta de servicio, pero en Windows suele ser mas comodo usar archivo.
+
+La hoja debe tener estas columnas, en este orden:
+
+```text
+Exportado en
+Folio
+Solicitud ID
+Estado
+Nombre
+CURP
+Correo
+Telefono
+RFC
+Clave de cobro
+Descripcion clave
+Estado civil
+Domicilio
+Revisado por
+Revisado en
+Creado en
+Notas
+```
+
+Pasos en Google Cloud:
+
+1. Crea un proyecto en Google Cloud.
+2. Habilita Google Sheets API.
+3. Crea una cuenta de servicio.
+4. Descarga su JSON.
+5. Abre tu Google Sheet y compartelo con el `client_email` del JSON como editor.
+6. Copia el ID del spreadsheet desde la URL.
+
+Ejemplo de URL:
+
+```text
+https://docs.google.com/spreadsheets/d/ESTE_ES_EL_ID/edit
+```
+
+## 6. Catalogo de codigos postales
 
 Para que el CP autocomplete colonia, municipio y estado necesitas cargar el catalogo SEPOMEX.
 

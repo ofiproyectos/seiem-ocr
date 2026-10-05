@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     operator_token: str = "dev-operator-token"
     filiacion_template_path: Path = Path(r"C:\Users\UsuarioGEM\Downloads\Plantilla_filiacion.xlsx")
     export_dir: Path = Path("exports")
+    google_sheets_enabled: bool = False
+    google_sheets_spreadsheet_id: str | None = None
+    google_sheets_sheet_name: str = "Revisiones"
+    google_service_account_file: Path | None = None
+    google_service_account_json: str | None = None
     database_url: str = Field(
         default="mysql+pymysql://seiem_app:CAMBIA_ESTA_CONTRASENA@127.0.0.1:3306/seiem_filiacion?charset=utf8mb4"
     )
