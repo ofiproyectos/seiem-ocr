@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
-import { AlertCircle, Download, FileSearch, ListChecks, Lock, Save, Upload, UserRound } from 'lucide-react'
+import { AlertCircle, ArrowLeft, Download, FileSearch, ListChecks, Lock, RefreshCw, Save, Upload, UserRound } from 'lucide-react'
 import './App.css'
 
 type View = 'solicitante' | 'revision'
@@ -358,6 +358,26 @@ function authHeaders(token: string) {
   return { Authorization: `Bearer ${token}` }
 }
 
+function solicitudName(solicitud: Solicitud) {
+  return solicitud.nombre_completo || solicitud.datos?.nombreCompleto || 'Sin nombre'
+}
+
+function solicitudEmail(solicitud: Solicitud) {
+  return solicitud.correo_electronico || solicitud.datos?.correoElectronico || 'Sin correo'
+}
+
+function statusClassName(status: string) {
+  const normalized = cleanUpper(status)
+  if (normalized.includes('REVIS')) return 'revisada'
+  if (normalized.includes('RECHAZ')) return 'rechazada'
+  return 'pendiente'
+}
+
+function getRevisionSolicitudId(pathname: string) {
+  const match = pathname.replace(/\/$/, '').match(/^\/revision\/([^/]+)$/)
+  return match?.[1] ?? null
+}
+
 async function lookupCp(cp: string): Promise<CpOption[]> {
   if (!/^\d{5}$/.test(cp)) return []
   const response = await fetch(`/api/codigos-postales/${cp}`)
@@ -586,7 +606,9 @@ function StatusModal({ message, onClose }: { message: NonNullable<FlashMessage>;
 }
 
 function App() {
-  const view: View = window.location.pathname.replace(/\/$/, '') === '/revision' ? 'revision' : 'solicitante'
+  const [pathname, setPathname] = useState(() => window.location.pathname.replace(/\/$/, '') || '/')
+  const view: View = pathname === '/revision' || pathname.startsWith('/revision/') ? 'revision' : 'solicitante'
+  const revisionSolicitudId = view === 'revision' ? getRevisionSolicitudId(pathname) : null
   const [requestForm, setRequestForm] = useState<CaptureForm>(mergeForm())
   const [operatorForm, setOperatorForm] = useState<CaptureForm>(mergeForm())
   const [operatorNotes, setOperatorNotes] = useState('')
@@ -607,9 +629,63 @@ function App() {
     return Array.isArray(value) ? value : []
   }, [lastExtraction])
 
+  const solicitudStats = useMemo(() => {
+    return solicitudes.reduce(
+      (stats, solicitud) => {
+        const status = statusClassName(solicitud.estado)
+        return {
+          total: stats.total + 1,
+          pendientes: stats.pendientes + (status === 'pendiente' ? 1 : 0),
+          revisadas: stats.revisadas + (status === 'revisada' ? 1 : 0),
+        }
+      },
+      { total: 0, pendientes: 0, revisadas: 0 },
+    )
+  }, [solicitudes])
+
   useEffect(() => {
-    if (view === 'revision' && token) loadSolicitudes()
-  }, [view, token])
+    function handlePopState() {
+      setPathname(window.location.pathname.replace(/\/$/, '') || '/')
+    }
+
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
+
+  useEffect(() => {
+    if (view !== 'revision' || !token) return
+
+    let active = true
+
+    async function loadInitialSolicitudes() {
+      const response = await fetch('/api/solicitudes', { headers: authHeaders(token) })
+      const payload = await readApiResponse(response)
+      if (!active) return
+      if (!response.ok) {
+        setFlash({ kind: 'error', text: payload.detail ?? 'No se pudieron cargar solicitudes.' })
+        return
+      }
+      setSolicitudes(payload)
+      if (revisionSolicitudId) {
+        const solicitud = payload.find((item: Solicitud) => item.id === revisionSolicitudId)
+        if (solicitud) {
+          setSelected(solicitud)
+          setOperatorForm(mergeForm(solicitud.datos))
+          setOperatorNotes(solicitud.notas_operador ?? '')
+          setLastExtraction(null)
+          setFile(null)
+        } else {
+          setSelected(null)
+          setFlash({ kind: 'error', text: 'No se encontro la solicitud solicitada.' })
+        }
+      }
+    }
+
+    loadInitialSolicitudes()
+    return () => {
+      active = false
+    }
+  }, [view, token, revisionSolicitudId])
 
   function showMessage(kind: FlashKind, text: string, warnings?: string[]) {
     setFlash({ kind, text, warnings })
@@ -698,13 +774,36 @@ function App() {
       return
     }
     setSolicitudes(payload)
-    if (payload.length && !selected) selectSolicitud(payload[0])
+    if (revisionSolicitudId) {
+      const solicitud = payload.find((item: Solicitud) => item.id === revisionSolicitudId)
+      if (solicitud) {
+        selectSolicitud(solicitud)
+      } else {
+        setSelected(null)
+        showMessage('error', 'No se encontro la solicitud solicitada.')
+      }
+    }
   }
 
   function selectSolicitud(solicitud: Solicitud) {
     setSelected(solicitud)
     setOperatorForm(mergeForm(solicitud.datos))
     setOperatorNotes(solicitud.notas_operador ?? '')
+    setLastExtraction(null)
+    setFile(null)
+  }
+
+  function navigateToRevision(solicitud: Solicitud) {
+    selectSolicitud(solicitud)
+    const nextPath = `/revision/${solicitud.id}`
+    window.history.pushState({}, '', nextPath)
+    setPathname(nextPath)
+  }
+
+  function backToSolicitudes() {
+    window.history.pushState({}, '', '/revision')
+    setPathname('/revision')
+    setSelected(null)
     setLastExtraction(null)
     setFile(null)
   }
@@ -809,7 +908,13 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">{view === 'solicitante' ? 'Inicio de solicitud' : 'Panel de revision'}</p>
-            <h1>{view === 'solicitante' ? 'Solicitud de filiacion' : 'Revisión de solicitudes'}</h1>
+            <h1>
+              {view === 'solicitante'
+                ? 'Solicitud de filiacion'
+                : revisionSolicitudId
+                  ? 'Detalle de revision'
+                  : 'Revision de solicitudes'}
+            </h1>
           </div>
           {view === 'revision' && token && <span className="operator-badge"><Lock size={16} /> {username}</span>}
         </header>
@@ -835,27 +940,84 @@ function App() {
             </button>
           </form>
         ) : (
-          <section className="operator-grid">
+          <section className={`operator-grid ${revisionSolicitudId ? 'detail-mode' : 'list-mode'}`}>
+            {!revisionSolicitudId && (
             <div className="requests-list">
               <div className="requests-header">
-                <div className="section-title"><ListChecks size={20} /><h2>Solicitudes</h2></div>
-                <span>{solicitudes.length} registro{solicitudes.length === 1 ? '' : 's'}</span>
+                <div>
+                  <div className="section-title"><ListChecks size={20} /><h2>Solicitudes</h2></div>
+                  <span>{solicitudes.length} registro{solicitudes.length === 1 ? '' : 's'} disponibles</span>
+                </div>
+                <button className="secondary" type="button" onClick={loadSolicitudes}>
+                  <RefreshCw size={17} /> Actualizar
+                </button>
               </div>
-              <button className="secondary" type="button" onClick={loadSolicitudes}>Actualizar lista</button>
-              <div className="requests-stack">
-                {solicitudes.map((solicitud) => (
-                  <button className={selected?.id === solicitud.id ? 'request selected' : 'request'} key={solicitud.id} onClick={() => selectSolicitud(solicitud)}>
-                    <strong>{solicitud.nombre_completo || solicitud.datos?.nombreCompleto || 'Sin nombre'}</strong>
-                    <span>{solicitud.estado}</span>
-                    <small>{new Date(solicitud.created_at).toLocaleString()}</small>
-                  </button>
-                ))}
+              <div className="requests-kpis" aria-label="Resumen de solicitudes">
+                <div>
+                  <span>Total</span>
+                  <strong>{solicitudStats.total}</strong>
+                </div>
+                <div>
+                  <span>Pendientes</span>
+                  <strong>{solicitudStats.pendientes}</strong>
+                </div>
+                <div>
+                  <span>Revisadas</span>
+                  <strong>{solicitudStats.revisadas}</strong>
+                </div>
+              </div>
+              <div className="requests-table-wrapper">
+                <table className="requests-table">
+                  <thead>
+                    <tr>
+                      <th>Solicitante</th>
+                      <th>CURP</th>
+                      <th>Contacto</th>
+                      <th>Fecha</th>
+                      <th>Status</th>
+                      <th>Accion</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {solicitudes.map((solicitud) => (
+                      <tr className={selected?.id === solicitud.id ? 'selected' : ''} key={solicitud.id}>
+                        <td data-label="Solicitante">
+                          <strong>{solicitudName(solicitud)}</strong>
+                          <span>ID {solicitud.id}</span>
+                        </td>
+                        <td data-label="CURP">{solicitud.curp || solicitud.datos?.curp || 'Pendiente'}</td>
+                        <td data-label="Contacto">{solicitudEmail(solicitud)}</td>
+                        <td data-label="Fecha">{new Date(solicitud.created_at).toLocaleString()}</td>
+                        <td data-label="Status">
+                          <span className={`status-pill ${statusClassName(solicitud.estado)}`}>{solicitud.estado}</span>
+                        </td>
+                        <td data-label="Accion">
+                          <button className="review-button" type="button" onClick={() => navigateToRevision(solicitud)}>
+                            <FileSearch size={16} /> Revisar
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {solicitudes.length === 0 && (
+                      <tr>
+                        <td className="empty-table" colSpan={6}>No hay solicitudes para mostrar.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
+            )}
 
+            {revisionSolicitudId && (
             <div className="review-panel">
               {selected ? (
                 <>
+                  <div className="review-toolbar">
+                    <button className="secondary" type="button" onClick={backToSolicitudes}>
+                      <ArrowLeft size={18} /> Volver a solicitudes
+                    </button>
+                  </div>
                   <section className="selected-summary">
                     <div>
                       <span>Solicitud seleccionada</span>
@@ -904,9 +1066,10 @@ function App() {
                   />
                 </>
               ) : (
-                <p className="notice">Selecciona una solicitud.</p>
+                <p className="notice">Cargando solicitud...</p>
               )}
             </div>
+            )}
           </section>
         )}
       </section>
@@ -930,7 +1093,7 @@ function SolicitanteForm({
   onSubmit: () => void
 }) {
   return (
-    <>
+    <section className="form-flow applicant-flow">
       <section className="form-section">
         <div className="section-title"><UserRound size={20} /><h2>Datos del solicitante</h2></div>
         <NameFields
@@ -985,7 +1148,7 @@ function SolicitanteForm({
       <div className="actions-row">
         <button className="primary" type="button" onClick={onSubmit} disabled={saving}><Save size={18} />{saving ? 'Enviando...' : 'Enviar solicitud'}</button>
       </div>
-    </>
+    </section>
   )
 }
 
