@@ -1,0 +1,142 @@
+{
+  "estado": "borrador",
+  "curp": null,
+  "nombre_completo": "DEMO PERSONA",
+  "correo_electronico": "persona@example.invalid",
+  "datos": {
+    "rfc": "",
+    "curp": "",
+    "fechaNacimiento": "",
+    "lugarNacimiento": "",
+    "sexo": "",
+    "telefono": "",
+    "estadoCivil": "",
+    "nombreConyuge": "",
+    "padre": "",
+    "madre": "",
+    "noActa": "",
+    "anioActa": "",
+    "libro": "",
+    "clase": "",
+    "cartillaSmn": "",
+    "claveCobro": "",
+    "descripcionClave": "",
+    "nombrePartes": {
+      "apellidos": "DEMO",
+      "nombres": "PERSONA"
+    },
+    "nombreCompleto": "DEMO PERSONA",
+    "correoElectronico": "persona@example.invalid",
+    "conyugeNombrePartes": {
+      "apellidos": "",
+      "nombres": ""
+    },
+    "padreNombrePartes": {
+      "apellidos": "",
+      "nombres": ""
+    },
+    "madreNombrePartes": {
+      "apellidos": "",
+      "nombres": ""
+    },
+    "domicilio": {
+      "cp": "",
+      "calle": "",
+      "numeroExterior": "",
+      "numeroInterior": "",
+      "colonia": "",
+      "municipio": "",
+      "estado": ""
+    },
+    "lugar": "LUGAR DE EJEMPLO",
+    "fechaFiliacion": "2026-10-06",
+    "referencias": [
+      {
+        "nombre": "",
+        "nombrePartes": {
+          "apellidos": "",
+          "nombres": ""
+        },
+        "domicilio": {
+          "cp": "",
+          "calle": "",
+          "numeroExterior": "",
+          "numeroInterior": "",
+          "colonia": "",
+          "municipio": "",
+          "estado": ""
+        },
+        "parentesco": "Conocido"
+      },
+      {
+        "nombre": "",
+        "nombrePartes": {
+          "apellidos": "",
+          "nombres": ""
+        },
+        "domicilio": {
+          "cp": "",
+          "calle": "",
+          "numeroExterior": "",
+          "numeroInterior": "",
+          "colonia": "",
+          "municipio": "",
+          "estado": ""
+        },
+        "parentesco": "Conocido"
+      },
+      {
+        "nombre": "",
+        "nombrePartes": {
+          "apellidos": "",
+          "nombres": ""
+        },
+        "domicilio": {
+          "cp": "",
+          "calle": "",
+          "numeroExterior": "",
+          "numeroInterior": "",
+          "colonia": "",
+          "municipio": "",
+          "estado": ""
+        },
+        "parentesco": "Familiar"
+      },
+      {
+        "nombre": "",
+        "nombrePartes": {
+          "apellidos": "",
+          "nombres": ""
+        },
+        "domicilio": {
+          "cp": "",
+          "calle": "",
+          "numeroExterior": "",
+          "numeroInterior": "",
+          "colonia": "",
+          "municipio": "",
+          "estado": ""
+        },
+        "parentesco": "Familiar"
+      }
+    ],
+    "fotos": {
+      "frenteCuadro": "",
+      "frenteOvalo": "",
+      "perfilOvalo": ""
+    },
+    "rasgos": {
+      "tonoPiel": "",
+      "pelo": "",
+      "frente": "",
+      "cejas": "",
+      "ojos": "",
+      "nariz": "",
+      "boca": "",
+      "estatura": "",
+      "senasVisibles": ""
+    }
+  },
+  "extracciones": [],
+  "notas_operador": null
+}

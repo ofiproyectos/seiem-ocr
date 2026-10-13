@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from base64 import b64decode
 from datetime import datetime
+from logging import getLogger
 from posixpath import basename, dirname, join, normpath
 from pathlib import Path
 from re import DOTALL, compile, escape as re_escape, findall, match, search, sub
@@ -11,8 +12,13 @@ from xml.sax.saxutils import escape as xml_escape
 
 import cv2
 import numpy as np
+import mediapipe as mp
 
 from backend.app.config import get_settings
+
+
+logger = getLogger(__name__)
+_selfie_segmentation = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
 
 
 MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -123,7 +129,7 @@ def prepare_photo(photo: dict[str, str], photo_cache: dict[str, bytes]) -> dict[
         return None
     if data_url not in photo_cache:
         _, payload = data_url.split(",", 1)
-        photo_cache[data_url] = clean_photo_background(b64decode(payload))
+        photo_cache[data_url] = clean_photo_background(b64decode(payload), photo["anchor"])
     image_bytes = fit_photo_to_anchor(photo_cache[data_url], photo["anchor"])
     return {
         "name": photo["name"],
@@ -133,7 +139,7 @@ def prepare_photo(photo: dict[str, str], photo_cache: dict[str, bytes]) -> dict[
     }
 
 
-def clean_photo_background(image_bytes: bytes) -> bytes:
+def clean_photo_background(image_bytes: bytes, anchor: str = "frente_cuadro") -> bytes:
     raw = np.frombuffer(image_bytes, dtype=np.uint8)
     image = cv2.imdecode(raw, cv2.IMREAD_COLOR)
     if image is None:
@@ -145,59 +151,81 @@ def clean_photo_background(image_bytes: bytes) -> bytes:
         image = cv2.resize(image, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
         height, width = image.shape[:2]
 
-    mask = np.zeros((height, width), np.uint8)
-    rect = (
-        max(1, int(width * 0.12)),
-        max(1, int(height * 0.04)),
-        max(2, int(width * 0.76)),
-        max(2, int(height * 0.92)),
-    )
-    bgd_model = np.zeros((1, 65), np.float64)
-    fgd_model = np.zeros((1, 65), np.float64)
-
     try:
-        cv2.grabCut(image, mask, rect, bgd_model, fgd_model, 2, cv2.GC_INIT_WITH_RECT)
-        foreground = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype("uint8")
-        kernel = np.ones((3, 3), np.uint8)
-        foreground = cv2.morphologyEx(foreground, cv2.MORPH_CLOSE, kernel, iterations=1)
-        foreground = cv2.morphologyEx(foreground, cv2.MORPH_OPEN, kernel, iterations=1)
-        foreground = cv2.GaussianBlur(foreground, (5, 5), 0)
-        foreground = remove_border_background_from_mask(image, foreground)
-        alpha = foreground.astype(np.float32) / 255.0
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        result = _selfie_segmentation.process(rgb_image)
+        if result.segmentation_mask is None:
+            raise RuntimeError("MediaPipe no devolvio una mascara de persona.")
+
+        probability = result.segmentation_mask
+        # Prefer preserving clothing and hair over removing a few background
+        # pixels around the subject.
+        foreground = np.where(probability > 0.20, 255, 0).astype("uint8")
+        foreground = cv2.morphologyEx(
+            foreground,
+            cv2.MORPH_CLOSE,
+            np.ones((11, 11), np.uint8),
+            iterations=2,
+        )
+        foreground = cv2.dilate(foreground, np.ones((9, 9), np.uint8), iterations=1)
+        target_aspect = {
+            "frente_cuadro": 1.0,
+            "frente_ovalo": 420 / 580,
+            "perfil_ovalo": 420 / 580,
+        }.get(anchor, 1.0)
+        crop = subject_crop_bounds(foreground, width, height, target_aspect)
+        if crop is not None:
+            x1, y1, x2, y2 = crop
+            image = image[y1:y2, x1:x2]
+            probability = probability[y1:y2, x1:x2]
+
+        alpha = np.clip((probability - 0.05) / 0.35, 0.0, 1.0)
+        alpha = cv2.GaussianBlur(alpha, (7, 7), 0)
         white = np.full_like(image, 255)
-        cleaned = (image * alpha[..., None] + white * (1 - alpha[..., None])).astype(np.uint8)
-    except cv2.error:
+        cleaned = (
+            image.astype(np.float32) * alpha[..., None]
+            + white.astype(np.float32) * (1.0 - alpha[..., None])
+        ).astype(np.uint8)
+    except (RuntimeError, cv2.error, ValueError) as exc:
+        logger.warning("MediaPipe no pudo limpiar la fotografia; se conserva el original: %s", exc)
         cleaned = image
 
     ok, encoded = cv2.imencode(".jpg", cleaned, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
     return encoded.tobytes() if ok else image_bytes
 
 
-def remove_border_background_from_mask(image: np.ndarray, foreground: np.ndarray) -> np.ndarray:
-    height, width = image.shape[:2]
-    border = max(8, min(height, width) // 18)
-    samples = np.concatenate(
-        [
-            image[:border].reshape(-1, 3),
-            image[-border:].reshape(-1, 3),
-            image[:, :border].reshape(-1, 3),
-            image[:, -border:].reshape(-1, 3),
-        ],
-        axis=0,
-    )
-    background_bgr = np.median(samples, axis=0).astype(np.uint8).reshape(1, 1, 3)
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.int16)
-    background_lab = cv2.cvtColor(background_bgr, cv2.COLOR_BGR2LAB).astype(np.int16)[0, 0]
-    distance = np.linalg.norm(lab - background_lab, axis=2)
-    background_like = (distance < 24).astype(np.uint8) * 255
-    edge_background = np.zeros((height + 2, width + 2), np.uint8)
-    flood = background_like.copy()
-    for point in [(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)]:
-        cv2.floodFill(flood, edge_background, point, 128)
-    connected_background = flood == 128
-    result = foreground.copy()
-    result[connected_background] = 0
-    return result
+def subject_crop_bounds(
+    foreground: np.ndarray,
+    width: int,
+    height: int,
+    target_aspect: float,
+) -> tuple[int, int, int, int] | None:
+    points = cv2.findNonZero(foreground)
+    if points is None:
+        return None
+
+    x, y, subject_width, subject_height = cv2.boundingRect(points)
+    if subject_width < max(12, int(width * 0.08)) or subject_height < max(12, int(height * 0.08)):
+        return None
+
+    padding_x = max(10, int(subject_width * 0.10))
+    padding_y = max(10, int(subject_height * 0.10))
+    crop_width = subject_width + padding_x * 2
+    crop_height = subject_height + padding_y * 2
+    if crop_width / crop_height > target_aspect:
+        crop_height = int(crop_width / target_aspect)
+    else:
+        crop_width = int(crop_height * target_aspect)
+
+    center_x = x + subject_width // 2
+    center_y = y + subject_height // 2
+    x1 = center_x - crop_width // 2
+    y1 = center_y - crop_height // 2
+    x1 = max(0, min(x1, width - crop_width))
+    y1 = max(0, min(y1, height - crop_height))
+    x2 = min(width, x1 + crop_width)
+    y2 = min(height, y1 + crop_height)
+    return x1, y1, x2, y2
 
 
 def fit_photo_to_anchor(image_bytes: bytes, anchor: str) -> bytes:
@@ -211,14 +239,22 @@ def fit_photo_to_anchor(image_bytes: bytes, anchor: str) -> bytes:
         "perfil_ovalo": (420, 580),
     }[anchor]
     height, width = image.shape[:2]
-    scale = min(target_width / width, target_height / height)
-    new_width = max(1, int(width * scale))
-    new_height = max(1, int(height * scale))
-    resized = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+    target_aspect = target_width / target_height
+    source_aspect = width / height
+    if abs(source_aspect - target_aspect) > 0.01:
+        if source_aspect > target_aspect:
+            crop_width = max(1, int(height * target_aspect))
+            left = max(0, (width - crop_width) // 2)
+            image = image[:, left : left + crop_width]
+        else:
+            crop_height = max(1, int(width / target_aspect))
+            top = max(0, (height - crop_height) // 2)
+            image = image[top : top + crop_height, :]
+        height, width = image.shape[:2]
+
     canvas = np.full((target_height, target_width, 3), 255, dtype=np.uint8)
-    x = (target_width - new_width) // 2
-    y = (target_height - new_height) // 2
-    canvas[y : y + new_height, x : x + new_width] = resized
+    resized = cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_AREA)
+    canvas[:, :] = resized
     ok, encoded = cv2.imencode(".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
     return encoded.tobytes() if ok else image_bytes
 
@@ -295,14 +331,36 @@ def insert_drawing_reference(sheet_xml: str, rel_id: str) -> str:
 
 
 def append_picture_anchor(drawing_xml: str, rel_id: str, picture_id: int, name: str, anchor: str) -> str:
-    from_col, from_row, to_col, to_row, geometry = {
-        "frente_cuadro": (10, 10, 12, 15, "rect"),
-        "frente_ovalo": (12, 7, 15, 16, "ellipse"),
-        "perfil_ovalo": (12, 17, 15, 26, "ellipse"),
-    }[anchor]
+    geometry = "rect" if anchor == "frente_cuadro" else "ellipse"
+    if anchor == "frente_cuadro":
+        from_col, from_row, to_col, to_row = 8, 9, 11, 14
+        anchor_xml = picture_two_cell_anchor(
+            rel_id, picture_id, name, geometry, from_col, from_row, to_col, to_row
+        )
+    else:
+        from_col, from_row, col_offset, row_offset, width, height = {
+            "frente_ovalo": (11, 5, 361950, 371475, 1019175, 1495425),
+            "perfil_ovalo": (11, 15, 361950, 152400, 1085850, 1543050),
+        }[anchor]
+        anchor_xml = picture_one_cell_anchor(
+            rel_id, picture_id, name, geometry, from_col, from_row, col_offset, row_offset, width, height
+        )
+    return drawing_xml.replace("</xdr:wsDr>", f"{anchor_xml}</xdr:wsDr>").replace("</wsDr>", f"{anchor_xml}</wsDr>")
+
+
+def picture_two_cell_anchor(
+    rel_id: str,
+    picture_id: int,
+    name: str,
+    geometry: str,
+    from_col: int,
+    from_row: int,
+    to_col: int,
+    to_row: int,
+) -> str:
     anchor_xml = f"""
   <xdr:twoCellAnchor editAs="oneCell">
-    <xdr:from><xdr:col>{from_col}</xdr:col><xdr:colOff>80000</xdr:colOff><xdr:row>{from_row}</xdr:row><xdr:rowOff>80000</xdr:rowOff></xdr:from>
+    <xdr:from><xdr:col>{from_col}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>{from_row}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>
     <xdr:to><xdr:col>{to_col}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>{to_row}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
     <xdr:pic>
       <xdr:nvPicPr><xdr:cNvPr id="{picture_id}" name="{xml_escape(name)}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>
@@ -311,7 +369,32 @@ def append_picture_anchor(drawing_xml: str, rel_id: str, picture_id: int, name: 
     </xdr:pic>
     <xdr:clientData/>
   </xdr:twoCellAnchor>"""
-    return drawing_xml.replace("</xdr:wsDr>", f"{anchor_xml}</xdr:wsDr>").replace("</wsDr>", f"{anchor_xml}</wsDr>")
+    return anchor_xml
+
+
+def picture_one_cell_anchor(
+    rel_id: str,
+    picture_id: int,
+    name: str,
+    geometry: str,
+    from_col: int,
+    from_row: int,
+    col_offset: int,
+    row_offset: int,
+    width: int,
+    height: int,
+) -> str:
+    return f"""
+  <xdr:oneCellAnchor>
+    <xdr:from><xdr:col>{from_col}</xdr:col><xdr:colOff>{col_offset}</xdr:colOff><xdr:row>{from_row}</xdr:row><xdr:rowOff>{row_offset}</xdr:rowOff></xdr:from>
+    <xdr:ext cx="{width}" cy="{height}"/>
+    <xdr:pic>
+      <xdr:nvPicPr><xdr:cNvPr id="{picture_id}" name="{xml_escape(name)}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>
+      <xdr:blipFill><a:blip r:embed="{rel_id}" xmlns:r="{REL_NS}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>
+      <xdr:spPr><a:prstGeom prst="{geometry}"><a:avLst/></a:prstGeom></xdr:spPr>
+    </xdr:pic>
+    <xdr:clientData/>
+  </xdr:oneCellAnchor>"""
 
 
 def patch_content_types(xml: str, drawing_path: str) -> str:

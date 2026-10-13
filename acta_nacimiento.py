@@ -5,6 +5,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from difflib import SequenceMatcher
+import html
 import json
 from pathlib import Path
 import re
@@ -12,9 +13,14 @@ import sys
 import unicodedata
 
 import cv2
+import httpx
 import numpy as np
 import pymupdf
 import pytesseract
+try:
+    import zxingcpp
+except ImportError:
+    zxingcpp = None
 
 from prueba import cargar_imagen, configurar_tesseract, detectar_documento_rectangular, interpretar_campo
 from archivos import es_pdf, renderizar_pagina, validar_pdf
@@ -594,27 +600,246 @@ def interpretar_qr(contenido):
     for fragmento in contenido.split("|"):
         if ":" not in fragmento:
             continue
-        etiqueta, valor = fragmento.split(":", 1)
-        clave = re.sub(r"\s+", "_", "".join(c for c in unicodedata.normalize("NFKD", etiqueta.strip().lower()) if not unicodedata.combining(c)))
-        campos[clave] = valor.strip().rstrip(",").strip()
+        partes = re.split(r",\s*(?=[A-Za-zÁÉÍÓÚÑáéíóúñ0-9_ ]{2,35}:)", fragmento)
+        for parte in partes:
+            if ":" not in parte:
+                continue
+            etiqueta, valor = parte.split(":", 1)
+            clave = re.sub(r"\s+", "_", "".join(c for c in unicodedata.normalize("NFKD", etiqueta.strip().lower()) if not unicodedata.combining(c)))
+            campos[clave] = valor.strip().rstrip(",").strip()
     return campos
 
 
+def extraer_url(texto):
+    encontrado = re.search(r"https?://[^\s,;]+", texto or "", re.IGNORECASE)
+    return encontrado[0].rstrip(").]") if encontrado else None
+
+
+def texto_visible_html(contenido):
+    bloques = []
+    for encontrado in re.finditer(r"(?is)<textarea[^>]*>(.*?)</textarea>", contenido):
+        bloques.append(encontrado[1])
+    for encontrado in re.finditer(r"""(?is)<input[^>]+value=["']([^"']+)["']""", contenido):
+        bloques.append(encontrado[1])
+    contenido = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", contenido)
+    contenido = re.sub(r"(?is)<br\s*/?>", "\n", contenido)
+    contenido = re.sub(r"(?is)</(p|div|tr|li|h[1-6]|label|span)>", "\n", contenido)
+    contenido = re.sub(r"(?is)<[^>]+>", " ", contenido)
+    bloques.append(contenido)
+    contenido = "\n".join(bloques)
+    contenido = html.unescape(contenido)
+    return "\n".join(linea.strip() for linea in contenido.splitlines() if linea.strip())
+
+
+def buscar_valor(texto, etiquetas):
+    for etiqueta in etiquetas:
+        patron = rf"{etiqueta}\s*[:\-]?\s*([^\n\r|]+)"
+        encontrado = re.search(patron, texto, re.IGNORECASE)
+        if encontrado:
+            return limpiar_valor(encontrado[1])
+    return None
+
+
+def datos_acta_vacios():
+    return {
+        "tipo_documento": "acta_nacimiento",
+        "identificador_electronico": None,
+        "curp": None,
+        "numero_certificado_nacimiento": None,
+        "registro": {
+            "entidad": None,
+            "municipio": None,
+            "oficialia": None,
+            "fecha_registro": None,
+            "libro": None,
+            "numero_acta": None,
+        },
+        "persona_registrada": {
+            "nombres": None,
+            "primer_apellido": None,
+            "segundo_apellido": None,
+            "nombre_completo": None,
+            "sexo": None,
+            "fecha_nacimiento": None,
+            "lugar_nacimiento": None,
+        },
+        "filiacion": [],
+        "codigos_qr": [],
+        "url_verificacion": None,
+        "verificacion_qr": None,
+    }
+
+
+def campo_numerico(valor, maximo=10):
+    if valor is None:
+        return None
+    valor = html.unescape(str(valor)).strip()
+    encontrado = re.search(r"\b\d{1,%d}\b" % maximo, valor)
+    return encontrado[0] if encontrado else None
+
+
+def campo_fecha(valor):
+    if valor is None:
+        return None
+    encontrado = re.search(r"\b\d{1,2}/\d{1,2}/\d{4}\b", str(valor))
+    return encontrado[0] if encontrado else None
+
+
+def aplicar_campos_qr(datos, campos):
+    persona = datos["persona_registrada"]
+    registro = datos["registro"]
+    datos["curp"] = datos["curp"] or campos.get("curp")
+    datos["identificador_electronico"] = datos["identificador_electronico"] or campos.get("identificador_electronico") or campos.get("id_electronico")
+    registro["libro"] = registro["libro"] or campo_numerico(campos.get("libro"), maximo=8)
+    registro["numero_acta"] = registro["numero_acta"] or campo_numerico(campos.get("acta") or campos.get("numero_de_acta") or campos.get("numero_acta"))
+    registro["oficialia"] = registro["oficialia"] or campo_numerico(campos.get("oficialia"), maximo=5)
+    registro["fecha_registro"] = registro["fecha_registro"] or campo_fecha(campos.get("fecha_de_registro") or campos.get("fecha_registro"))
+    registro["entidad"] = registro["entidad"] or campo_numerico(campos.get("entidad"), maximo=2)
+    registro["municipio"] = registro["municipio"] or campo_numerico(campos.get("municipio"), maximo=3)
+    persona["sexo"] = persona["sexo"] or campos.get("sexo")
+    persona["fecha_nacimiento"] = persona["fecha_nacimiento"] or campos.get("fecha_de_nacimiento") or campos.get("fecha_nacimiento") or campos.get("fechanacimiento")
+    nombre = campos.get("registrado") or campos.get("nombre") or campos.get("nombre_s") or campos.get("nombres")
+    primer = campos.get("primer_apellido")
+    segundo = campos.get("segundo_apellido")
+    if nombre:
+        persona["nombre_completo"] = persona["nombre_completo"] or nombre
+        if not persona["nombres"]:
+            partes_nombre = nombre.split()
+            if len(partes_nombre) >= 3:
+                persona["nombres"] = " ".join(partes_nombre[:-2])
+                persona["primer_apellido"] = persona["primer_apellido"] or partes_nombre[-2]
+                persona["segundo_apellido"] = persona["segundo_apellido"] or partes_nombre[-1]
+            else:
+                persona["nombres"] = nombre
+    if primer:
+        persona["primer_apellido"] = persona["primer_apellido"] or primer
+    if segundo:
+        persona["segundo_apellido"] = persona["segundo_apellido"] or segundo
+    if not persona["nombre_completo"]:
+        partes = [persona["nombres"], persona["primer_apellido"], persona["segundo_apellido"]]
+        persona["nombre_completo"] = " ".join(p for p in partes if p) or campos.get("nombre_completo")
+    filiacion = []
+    for clave in ("padre1", "padre2"):
+        if campos.get(clave):
+            filiacion.append({"nombres": None, "primer_apellido": None, "segundo_apellido": None, "nombre_completo": campos[clave], "nacionalidad": campos.get("nacionalidad"), "curp": None})
+    if filiacion and not datos["filiacion"]:
+        datos["filiacion"] = filiacion
+
+
+def aplicar_texto_verificacion(datos, texto):
+    texto_normalizado = normalizar(texto)
+    if "CONSULTAS" in texto_normalizado and "REALIZADAS" in texto_normalizado:
+        return False
+    persona = datos["persona_registrada"]
+    registro = datos["registro"]
+    datos["curp"] = datos["curp"] or buscar_valor(texto, ("CURP", "Clave Unica de Registro de Poblacion"))
+    datos["identificador_electronico"] = datos["identificador_electronico"] or buscar_valor(texto, ("Identificador Electronico", "Identificador"))
+    registro["entidad"] = registro["entidad"] or buscar_valor(texto, ("Entidad de Registro", "Entidad"))
+    registro["municipio"] = registro["municipio"] or buscar_valor(texto, ("Municipio de Registro", "Municipio"))
+    registro["oficialia"] = registro["oficialia"] or campo_numerico(buscar_valor(texto, ("Oficialia",)), maximo=5)
+    registro["libro"] = registro["libro"] or campo_numerico(buscar_valor(texto, ("Libro",)), maximo=8)
+    registro["numero_acta"] = registro["numero_acta"] or campo_numerico(buscar_valor(texto, ("Numero de Acta",)))
+    registro["fecha_registro"] = registro["fecha_registro"] or campo_fecha(buscar_valor(texto, ("Fecha de Registro",)))
+    persona["nombre_completo"] = persona["nombre_completo"] or buscar_valor(texto, ("Nombre", "Nombre Completo"))
+    persona["sexo"] = persona["sexo"] or buscar_valor(texto, ("Sexo",))
+    persona["fecha_nacimiento"] = persona["fecha_nacimiento"] or buscar_valor(texto, ("Fecha de Nacimiento",))
+    lugar = buscar_valor(texto, ("Lugar de Nacimiento",))
+    if lugar and not persona["lugar_nacimiento"]:
+        persona["lugar_nacimiento"] = {"texto": lugar, "municipio": None, "entidad": None}
+    return True
+
+
+def consultar_url_qr(url):
+    with httpx.Client(follow_redirects=True, timeout=12.0) as cliente:
+        respuesta = cliente.get(url)
+        respuesta.raise_for_status()
+        tipo = respuesta.headers.get("content-type", "")
+        texto = texto_visible_html(respuesta.text) if "html" in tipo else respuesta.text
+        return {"url": str(respuesta.url), "status_code": respuesta.status_code, "texto": texto[:12000]}
+
+
 def decodificar_qr(roi):
+    if roi is None or roi.size == 0:
+        return "", False
+    if zxingcpp is not None:
+        try:
+            for imagen in (roi, cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)):
+                codigos = zxingcpp.read_barcodes(imagen, formats=zxingcpp.BarcodeFormat.QRCode)
+                if codigos:
+                    return codigos[0].text, True
+        except Exception:
+            pass
     detector = cv2.QRCodeDetector()
-    intentos = [roi]
-    gris = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    intentos.extend([
-        cv2.resize(roi, None, fx=1.6, fy=1.6, interpolation=cv2.INTER_CUBIC),
-        cv2.cvtColor(cv2.threshold(gris, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1], cv2.COLOR_GRAY2BGR),
-    ])
+    intentos = []
+    gris_base = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    gris_base = cv2.copyMakeBorder(gris_base, 18, 18, 18, 18, cv2.BORDER_CONSTANT, value=255)
+    for escala in (1.0, 1.6, 2.4, 3.2, 4.0):
+        gris = cv2.resize(gris_base, None, fx=escala, fy=escala, interpolation=cv2.INTER_CUBIC)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gris)
+        desenfocada = cv2.GaussianBlur(clahe, (0, 0), 1.0)
+        nitida = cv2.addWeighted(clahe, 1.8, desenfocada, -0.8, 0)
+        variantes = [
+            gris,
+            clahe,
+            nitida,
+            cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
+            cv2.adaptiveThreshold(clahe, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 35, 9),
+        ]
+        for variante in variantes:
+            intentos.append(cv2.cvtColor(variante, cv2.COLOR_GRAY2BGR))
+            intentos.append(cv2.cvtColor(cv2.rotate(variante, cv2.ROTATE_90_CLOCKWISE), cv2.COLOR_GRAY2BGR))
+            intentos.append(cv2.cvtColor(cv2.rotate(variante, cv2.ROTATE_180), cv2.COLOR_GRAY2BGR))
+            intentos.append(cv2.cvtColor(cv2.rotate(variante, cv2.ROTATE_90_COUNTERCLOCKWISE), cv2.COLOR_GRAY2BGR))
     detectado = False
     for imagen in intentos:
         contenido, puntos, _ = detector.detectAndDecode(imagen)
+        if not contenido and hasattr(detector, "detectAndDecodeCurved"):
+            try:
+                contenido, puntos, _ = detector.detectAndDecodeCurved(imagen)
+            except cv2.error:
+                pass
         detectado = detectado or puntos is not None
         if contenido:
             return contenido, True
     return "", detectado
+
+
+def candidatos_qr_por_contorno(imagen):
+    alto, ancho = imagen.shape[:2]
+    gris = cv2.cvtColor(imagen, cv2.COLOR_BGR2GRAY)
+    factor = min(1.0, 1400 / max(alto, ancho))
+    pequena = cv2.resize(gris, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA) if factor < 1 else gris
+    binaria = cv2.adaptiveThreshold(pequena, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 7)
+    cerrada = cv2.morphologyEx(binaria, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
+    contornos, _ = cv2.findContours(cerrada, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cajas = []
+    for contorno in contornos:
+        x, y, w, h = cv2.boundingRect(contorno)
+        if w < pequena.shape[1] * .025 or h < pequena.shape[0] * .025:
+            continue
+        proporcion = w / max(1, h)
+        if not .55 <= proporcion <= 1.75:
+            continue
+        area = cv2.contourArea(contorno)
+        densidad = area / max(1, w * h)
+        if densidad < .18:
+            continue
+        margen = round(max(w, h) * .22)
+        x0 = max(0, round((x - margen) / factor))
+        y0 = max(0, round((y - margen) / factor))
+        x1 = min(ancho, round((x + w + margen) / factor))
+        y1 = min(alto, round((y + h + margen) / factor))
+        cajas.append((x0, y0, x1, y1))
+    cajas.sort(key=lambda c: (c[2] - c[0]) * (c[3] - c[1]), reverse=True)
+    filtradas = []
+    for caja in cajas:
+        x0, y0, x1, y1 = caja
+        if any(abs(x0 - a) < 18 and abs(y0 - b) < 18 and abs(x1 - c) < 18 and abs(y1 - d) < 18 for a, b, c, d in filtradas):
+            continue
+        filtradas.append(caja)
+        if len(filtradas) >= 12:
+            break
+    return filtradas
 
 
 def leer_qr(imagen):
@@ -636,7 +861,7 @@ def leer_qr(imagen):
             codigos_por_tipo[tipo] = {"tipo": tipo, "detectado": True, "contenido": contenido or None, "campos": interpretar_qr(contenido) if contenido else {}}
     regiones = {
         "firma": [(39, 590, 190, 739), (30, 580, 210, 740)],
-        "datos": [(510, 645, 575, 709), (490, 630, 580, 710)],
+        "datos": [(500, 625, 592, 730), (480, 610, 600, 742), (510, 645, 575, 709), (490, 630, 580, 710)],
     }
     for tipo, cajas in regiones.items():
         if tipo in codigos_por_tipo and codigos_por_tipo[tipo]["contenido"]:
@@ -649,7 +874,63 @@ def leer_qr(imagen):
             if contenido:
                 break
         codigos_por_tipo[tipo] = {"tipo": tipo, "detectado": codigos_por_tipo.get(tipo, {}).get("detectado", False) or detectado, "contenido": contenido or codigos_por_tipo.get(tipo, {}).get("contenido"), "campos": interpretar_qr(contenido) if contenido else codigos_por_tipo.get(tipo, {}).get("campos", {})}
+    for x0, y0, x1, y1 in candidatos_qr_por_contorno(imagen):
+        contenido, detectado = decodificar_qr(imagen[y0:y1, x0:x1])
+        if not contenido:
+            continue
+        tipo = "firma" if (x0 + x1) / 2 < ancho * .45 else "datos"
+        codigos_por_tipo[tipo] = {"tipo": tipo, "detectado": True, "contenido": contenido, "campos": interpretar_qr(contenido)}
+        if all(codigos_por_tipo.get(t, {}).get("contenido") for t in ("firma", "datos")):
+            break
     return [codigos_por_tipo.get(tipo, {"tipo": tipo, "detectado": False, "contenido": None, "campos": {}}) for tipo in ("firma", "datos")]
+
+
+def analizar_qr_acta(ruta):
+    ruta = Path(ruta)
+    if es_pdf(ruta):
+        with pymupdf.open(ruta) as documento:
+            validar_pdf(documento)
+            imagen = imagen_pagina(documento[0])
+            total_paginas = len(documento)
+    else:
+        imagen = cargar_imagen(ruta)
+        total_paginas = 1
+    imagen = preparar_foto(imagen)
+    codigos = leer_qr(imagen)
+    datos = datos_acta_vacios()
+    datos["codigos_qr"] = codigos
+    advertencias = []
+    url = None
+    tiene_datos_estructurados = False
+    for qr in codigos:
+        contenido = qr.get("contenido") or ""
+        if qr.get("campos"):
+            aplicar_campos_qr(datos, qr["campos"])
+            tiene_datos_estructurados = tiene_datos_estructurados or any(qr["campos"].get(campo) for campo in ("curp", "registrado", "acta", "numero_acta"))
+        url = url or extraer_url(contenido)
+    datos["url_verificacion"] = url
+    if not any(qr.get("contenido") for qr in codigos):
+        advertencias.append("No se pudo decodificar un QR en la imagen.")
+    if url and not tiene_datos_estructurados:
+        try:
+            verificacion = consultar_url_qr(url)
+            datos["verificacion_qr"] = verificacion
+            datos["url_verificacion"] = verificacion["url"]
+            aplicar_campos_qr(datos, interpretar_qr(verificacion["texto"]))
+            if not aplicar_texto_verificacion(datos, verificacion["texto"]):
+                advertencias.append("La pagina de verificacion ya alcanzo el numero maximo de consultas; se usaron solo los datos disponibles en el QR.")
+        except httpx.HTTPError as exc:
+            advertencias.append(f"Se obtuvo la liga del QR, pero no se pudo consultar: {exc}")
+    elif url and tiene_datos_estructurados:
+        datos["verificacion_qr"] = {"url": url, "status_code": None, "texto": None, "omitida": True}
+    elif not tiene_datos_estructurados:
+        advertencias.append("El QR no contiene una liga de verificacion; se usaron solo los datos embebidos.")
+    return {
+        "datos": datos,
+        "advertencias": advertencias,
+        "metodo": "qr",
+        "entrada": {"formato": "pdf" if es_pdf(ruta) else "imagen", "total_paginas": total_paginas},
+    }
 
 
 def es_acta(pagina):

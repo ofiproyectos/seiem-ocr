@@ -1,0 +1,82 @@
+{
+  "fecha": "2026-10-06",
+  "nota": "Instantanea de codigo seleccionado, sin configuracion de secretos ni datos operativos; no es un proyecto ejecutable completo.",
+  "archivos": [
+    {
+      "ruta_original": "backend/app/main.py",
+      "sha256": "3d0b2bb73b4833d866928d6aa8e0d1494e97b5d9562cd48c8467a6b2f5b9f74e"
+    },
+    {
+      "ruta_original": "backend/app/api/auth.py",
+      "sha256": "b009f547d1ff3b3cf4661e87afcfd69d7b0881944b6ecd3aeab7358ecb597e74"
+    },
+    {
+      "ruta_original": "backend/app/api/solicitudes.py",
+      "sha256": "cb5e65263c2516bf5cf69837cfabfe17b7cc6ac569c098cad4c64e2dcc20b03d"
+    },
+    {
+      "ruta_original": "backend/app/api/extracciones.py",
+      "sha256": "8dc1e8a30cff991b55f4a55953805bf4a0a4ce946142d4aaf448b003b74509ec"
+    },
+    {
+      "ruta_original": "backend/app/api/codigos_postales.py",
+      "sha256": "750611ea8dba7cd2deffefa185d2dec0e6f3c52f1286febb8182b3bfc3edfcc0"
+    },
+    {
+      "ruta_original": "backend/app/api/health.py",
+      "sha256": "b924fb6860612dfcb6dc6810efcb7e7fe10423fffec2eb953a692f5947439b46"
+    },
+    {
+      "ruta_original": "backend/app/schemas/solicitud.py",
+      "sha256": "d2014e5d82e6b10c6f3e098e57c95c2a78f379dfb36d523d559a08897a311fa8"
+    },
+    {
+      "ruta_original": "backend/app/models/solicitud.py",
+      "sha256": "b866e2e8cfa98f0902ce41d456bfbd64dea2c38149578572751038bb02592067"
+    },
+    {
+      "ruta_original": "backend/app/models/usuario_revision.py",
+      "sha256": "5a24a032325ac7aef3da45e8ba99743d07a9a1558ddec80d126b2e139170e031"
+    },
+    {
+      "ruta_original": "backend/app/models/codigo_postal.py",
+      "sha256": "4c4d74f1b2488ce933c0e296df8ad450b5e3ac7682c6b2f88b9c06529badf3e3"
+    },
+    {
+      "ruta_original": "backend/app/services/ocr_service.py",
+      "sha256": "8903d123c0f55ed245502a7eb47a89dd16aa9e8029d4775d93f9de4fb487708e"
+    },
+    {
+      "ruta_original": "backend/app/services/excel_service.py",
+      "sha256": "c3868034aa9897b820f5c8048e662dc6c956a9e16b703a09b2b55574458f89a0"
+    },
+    {
+      "ruta_original": "backend/app/services/spreadsheet_service.py",
+      "sha256": "616de18bf0b0697c9cb16e617dfbe2c532a0bb65a2b9e586f94b87ac0a1c804e"
+    },
+    {
+      "ruta_original": "extraer_documento.py",
+      "sha256": "728802943e84e45f52b921eda4bc3f8202ab0a58c792e6489f228518947984b9"
+    },
+    {
+      "ruta_original": "acta_nacimiento.py",
+      "sha256": "0ee979657180acdc1bce1d5b0da8b60329322899926618e350ca8be01f0f447e"
+    },
+    {
+      "ruta_original": "prueba.py",
+      "sha256": "6431044949b2829793dff0d06e3b2917525608c140f4268fde40b2734318af3e"
+    },
+    {
+      "ruta_original": "archivos.py",
+      "sha256": "ced2d7de352ca88fe3d82ce21ba1e37949db4904dc3d6bd4405cf224d8efc6bf"
+    },
+    {
+      "ruta_original": "requirements.txt",
+      "sha256": "2b11bf62084ca0db2608673bc00adfa5b698d4f4bc29c51b55c0189ecb59b9e5"
+    },
+    {
+      "ruta_original": "database/schema.sql",
+      "sha256": "073b0c21cb26da82b6e7d68c3f1ed5c0f41bf9a97049140a5f24143261bf032a"
+    }
+  ]
+}

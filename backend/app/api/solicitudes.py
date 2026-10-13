@@ -76,6 +76,30 @@ def descargar_excel(
     )
 
 
+@router.post("/{solicitud_id}/excel")
+def descargar_excel_con_datos_actuales(
+    solicitud_id: str,
+    payload: SolicitudUpdate,
+    db: Session = Depends(get_db),
+    operator: str = Depends(get_current_operator),
+) -> FileResponse:
+    solicitud = db.get(Solicitud, solicitud_id)
+    if solicitud is None:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada.")
+    datos = payload.datos if payload.datos is not None else solicitud.datos or {}
+    try:
+        path = exportar_filiacion_excel(solicitud.id, datos)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=f"No se pudo generar el Excel: {exc}") from exc
+    return FileResponse(
+        path,
+        filename=path.name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 @router.put("/{solicitud_id}", response_model=SolicitudRead)
 def actualizar_solicitud(
     solicitud_id: str,

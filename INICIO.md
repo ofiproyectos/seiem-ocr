@@ -168,4 +168,17 @@ Prueba un CP:
 Invoke-RestMethod http://127.0.0.1:8000/api/codigos-postales/52280
 ```
 
+## 7. Limpieza de fondo de fotografias
+
+La exportacion usa MediaPipe Selfie Segmentation para detectar a la persona y
+reemplazar el fondo por blanco, conservando los pixeles originales del sujeto.
+Instala las dependencias con:
+
+```powershell
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+MediaPipe esta fijado a la version `0.10.21`, que es la compatible con la API
+`SelfieSegmentation` utilizada por el backend.
+
 Los datos extraidos son una propuesta. La captura confirmada debe quedar en el formulario.

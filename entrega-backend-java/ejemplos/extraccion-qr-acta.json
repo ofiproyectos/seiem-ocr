@@ -1,0 +1,40 @@
+{
+  "tipo": "qr_acta",
+  "resultado": {
+    "datos": {
+      "tipo_documento": "acta_nacimiento",
+      "identificador_electronico": null,
+      "curp": null,
+      "numero_certificado_nacimiento": null,
+      "registro": {
+        "entidad": null,
+        "municipio": null,
+        "oficialia": null,
+        "fecha_registro": null,
+        "libro": null,
+        "numero_acta": null
+      },
+      "persona_registrada": {
+        "nombres": "PERSONA",
+        "primer_apellido": "DEMO",
+        "segundo_apellido": null,
+        "nombre_completo": "PERSONA DEMO",
+        "sexo": null,
+        "fecha_nacimiento": null,
+        "lugar_nacimiento": null
+      },
+      "filiacion": [],
+      "codigos_qr": [],
+      "url_verificacion": null,
+      "verificacion_qr": null
+    },
+    "advertencias": [
+      "Ejemplo parcial de datos del QR; no se consulta ninguna URL en este archivo."
+    ],
+    "metodo": "qr",
+    "entrada": {
+      "formato": "imagen",
+      "total_paginas": 1
+    }
+  }
+}

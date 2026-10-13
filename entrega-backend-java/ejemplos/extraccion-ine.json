@@ -1,0 +1,31 @@
+{
+  "tipo": "ine",
+  "resultado": {
+    "datos": {
+      "nombre": "DEMO PERSONA",
+      "apellido_paterno": "DEMO",
+      "apellido_materno": null,
+      "nombres": "PERSONA",
+      "domicilio": null,
+      "codigo_postal": null,
+      "clave_elector": null,
+      "curp": null,
+      "sexo": null,
+      "fecha_nacimiento": null,
+      "seccion": null,
+      "anio_registro": null,
+      "numero_emision": null,
+      "vigencia": null
+    },
+    "advertencias": [
+      "No se pudo leer curp. Ejemplo ilustrativo de resultado parcial."
+    ],
+    "calidad_campos": {},
+    "entrada": {
+      "formato": "imagen",
+      "pagina": 1,
+      "total_paginas": 1,
+      "metodo": "ocr"
+    }
+  }
+}

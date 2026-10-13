@@ -8,7 +8,7 @@ import sys
 import cv2
 import pymupdf
 
-from acta_nacimiento import extraer_acta
+from acta_nacimiento import analizar_qr_acta, extraer_acta
 from prueba import configurar_tesseract, extraer_datos
 
 
@@ -24,12 +24,16 @@ def procesar_documento(tipo, archivo, pagina=1, tesseract=None, incluir_ocr=Fals
         if pagina != 1:
             raise ValueError("Para el acta se procesan todas las páginas automáticamente.")
         return extraer_acta(archivo, tesseract=tesseract)
-    raise ValueError("Selecciona ine o acta.")
+    if tipo == "qr_acta":
+        if pagina != 1:
+            raise ValueError("Para el QR del acta no se selecciona pagina.")
+        return analizar_qr_acta(archivo)
+    raise ValueError("Selecciona ine, acta o qr_acta.")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("tipo", choices=("ine", "acta"))
+    parser.add_argument("tipo", choices=("ine", "acta", "qr_acta"))
     parser.add_argument("archivo", type=Path, help="Imagen JPG/PNG o PDF, digital o escaneado.")
     parser.add_argument("--pagina", type=int, default=1, help="Página con el anverso, solo para INE en PDF.")
     parser.add_argument("--salida", type=Path)

@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
-import { AlertCircle, ArrowLeft, Camera, Download, FileSearch, ListChecks, Lock, RefreshCw, RotateCcw, Save, Trash2, Upload, UserRound } from 'lucide-react'
+import { AlertCircle, ArrowLeft, ArrowUpRight, Camera, Check, ChevronRight, Download, FileSearch, Info, ListChecks, Lock, QrCode, RefreshCw, RotateCcw, Save, Trash2, Upload } from 'lucide-react'
 import './App.css'
 
 type View = 'solicitante' | 'revision'
-type DocType = 'ine' | 'acta'
+type DocType = 'ine' | 'acta' | 'qr_acta'
 type FlashKind = 'loading' | 'success' | 'error' | 'info'
 type FlashMessage = { kind: FlashKind; text: string; warnings?: string[] } | null
 
@@ -307,6 +307,15 @@ function extractYear(value?: string | number | null) {
   return match ? match[0] : ''
 }
 
+function extractDigits(value?: string | number | null) {
+  const match = String(value ?? '').match(/\d+/)
+  return match ? match[0] : ''
+}
+
+function keepValidDigits(current: string, extracted?: string | number | null) {
+  return /^\d+$/.test(current) ? current : extractDigits(extracted)
+}
+
 function parseIneAddress(value?: string | null, cp?: string | null): Address {
   const address = { ...emptyAddress, cp: cp ?? '' }
   if (!value) return address
@@ -342,6 +351,8 @@ function applyExtraction(current: CaptureForm, tipo: DocType, raw: any): Capture
   const filiacion = Array.isArray(datos.filiacion) ? datos.filiacion : []
   const currentYear = /^\d{4}$/.test(current.anioActa) ? current.anioActa : ''
   const extractedYear = extractYear(registro.fecha_registro)
+  const currentNoActa = keepValidDigits(current.noActa, registro.numero_acta)
+  const currentLibro = keepValidDigits(current.libro, registro.libro)
   const extractedName = persona.nombre_completo || ''
   const nombrePartes = current.nombreCompleto ? current.nombrePartes : splitActaName(persona)
   const padreNombrePartes = current.padre ? current.padreNombrePartes : splitActaName(filiacion[0])
@@ -358,12 +369,96 @@ function applyExtraction(current: CaptureForm, tipo: DocType, raw: any): Capture
     padre: current.padre || composeName(padreNombrePartes) || filiacion[0]?.nombre_completo || '',
     madreNombrePartes,
     madre: current.madre || composeName(madreNombrePartes) || filiacion[1]?.nombre_completo || '',
-    noActa: current.noActa || registro.numero_acta || '',
+    noActa: currentNoActa,
     anioActa: currentYear || extractedYear,
-    libro: current.libro || registro.libro || '',
+    libro: currentLibro,
     lugar: current.lugar || 'TOLUCA, MEXICO',
     fechaFiliacion: current.fechaFiliacion || todayIso(),
   }
+}
+
+function documentActionLabel(tipo: DocType, busy: boolean) {
+  if (busy) return tipo === 'qr_acta' ? 'Analizando QR...' : 'Analizando...'
+  return tipo === 'qr_acta' ? 'Analizar QR' : 'Analizar documento'
+}
+
+const applicantSections = [
+  { id: 'datos-solicitante', label: 'Datos personales' },
+  { id: 'domicilio-solicitante', label: 'Domicilio particular' },
+  { id: 'referencias-solicitante', label: 'Referencias' },
+]
+
+const reviewSections = [
+  { id: 'documentos', label: 'Documentos' },
+  { id: 'administrativos', label: 'Datos administrativos' },
+  { id: 'identidad', label: 'Identidad y registro' },
+  { id: 'contacto', label: 'Estado civil y contacto' },
+  { id: 'domicilio-revision', label: 'Domicilio' },
+  { id: 'referencias-revision', label: 'Referencias' },
+  { id: 'fotografias', label: 'Fotografías' },
+  { id: 'rasgos', label: 'Rasgos físicos' },
+  { id: 'notas', label: 'Notas de revisión' },
+]
+
+function SectionNav({ items, review = false }: { items: typeof applicantSections; review?: boolean }) {
+  const [active, setActive] = useState(items[0].id)
+
+  useEffect(() => {
+    let frame = 0
+    function updateActiveSection() {
+      frame = 0
+      const threshold = (document.querySelector('.topbar')?.getBoundingClientRect().bottom ?? 80) + 32
+      let current = items[0].id
+      for (const { id } of items) {
+        const element = document.getElementById(id)
+        if (element && element.getBoundingClientRect().top <= threshold) current = id
+      }
+      if (window.scrollY > 0 && window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+        current = items[items.length - 1].id
+      }
+      setActive(current)
+    }
+    function scheduleUpdate() {
+      if (!frame) frame = window.requestAnimationFrame(updateActiveSection)
+    }
+    updateActiveSection()
+    window.addEventListener('scroll', scheduleUpdate, { passive: true })
+    window.addEventListener('resize', scheduleUpdate)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('scroll', scheduleUpdate)
+      window.removeEventListener('resize', scheduleUpdate)
+    }
+  }, [items])
+
+  return (
+    <aside className="section-sidebar">
+      <nav className="section-nav" aria-label={review ? 'Secciones de revisión' : 'Secciones de la solicitud'}>
+        <p className="nav-caption">{review ? 'En este expediente' : 'Tu solicitud'}</p>
+        {items.map(({ id, label }, index) => (
+          <a key={id} href={`#${id}`} aria-current={active === id ? 'location' : undefined} onClick={() => setActive(id)}>
+            <span className="nav-number">{String(index + 1).padStart(2, '0')}</span>
+            <span>{label}</span>
+            <ChevronRight size={14} aria-hidden="true" />
+          </a>
+        ))}
+        <div className="sidebar-note">
+          <FileSearch size={20} aria-hidden="true" />
+          <strong>{review ? 'Revisión del expediente' : 'Antes de enviar'}</strong>
+          <p>{review ? 'Contrasta la información capturada con los documentos y guarda los cambios al finalizar.' : 'Ten a la mano tus datos personales y los domicilios de tus cuatro referencias.'}</p>
+        </div>
+      </nav>
+    </aside>
+  )
+}
+
+function SectionHeading({ number, title, description }: { number: string; title: string; description?: string }) {
+  return (
+    <div className="section-heading">
+      <span className="section-number" aria-hidden="true">{number}</span>
+      <div><h2>{title}</h2>{description && <p>{description}</p>}</div>
+    </div>
+  )
 }
 
 async function readApiResponse(response: Response) {
@@ -479,7 +574,7 @@ function AddressFields({ value, onChange, label }: { value: Address; onChange: (
     <fieldset className="address-block">
       <legend>{label}</legend>
       <div className="cp-search">
-        <label>CP<input value={value.cp} maxLength={5} onChange={(event) => update('cp', event.target.value.replace(/\D/g, ''))} onKeyDown={(event) => {
+        <label>Código postal<input value={value.cp} inputMode="numeric" autoComplete="postal-code" maxLength={5} onChange={(event) => update('cp', event.target.value.replace(/\D/g, ''))} onKeyDown={(event) => {
           if (event.key === 'Enter') {
             event.preventDefault()
             search()
@@ -492,13 +587,13 @@ function AddressFields({ value, onChange, label }: { value: Address; onChange: (
       <label>Calle<input value={value.calle} onChange={(event) => update('calle', event.target.value)} /></label>
       <label>No. exterior<input value={value.numeroExterior} onChange={(event) => update('numeroExterior', event.target.value)} /></label>
       <label>No. interior<input value={value.numeroInterior} onChange={(event) => update('numeroInterior', event.target.value)} /></label>
-      <label className="colony-select">Colonia o delegacion
+      <label className="colony-select">Colonia o delegación
         <select
           value={selectedOptionIndex >= 0 ? String(selectedOptionIndex) : ''}
           disabled={displayedOptions.length === 0}
           onChange={(event) => applyOption(displayedOptions[Number(event.target.value)])}
         >
-          <option value="">{displayedOptions.length ? 'Selecciona colonia' : ''}</option>
+          <option value="">{displayedOptions.length ? 'Selecciona colonia' : 'Consulta primero el CP'}</option>
           {displayedOptions.map((option, index) => (
             <option value={index} key={`${option.asentamiento}-${index}`}>
               {option.asentamiento}
@@ -575,12 +670,12 @@ function CivilStatusFields({
           <option value="Soltera">Soltera</option>
           <option value="Casado">Casado</option>
           <option value="Casada">Casada</option>
-          <option value="Union libre">Union libre</option>
+          <option value="Union libre">Unión libre</option>
         </select>
       </label>
       <div className={`spouse-name-wrapper ${!spouseEnabled ? 'disabled-name-block' : ''}`}>
         <NameFields
-          label="Nombre del conyuge"
+          label="Nombre del cónyuge"
           value={spouseEnabled ? conyugePartes : mergeName(undefined, conyuge)}
           onChange={onConyuge}
           disabled={!spouseEnabled}
@@ -591,7 +686,22 @@ function CivilStatusFields({
 }
 
 function StatusModal({ message, onClose }: { message: NonNullable<FlashMessage>; onClose: () => void }) {
+  const dialogRef = useRef<HTMLDialogElement>(null)
   const isLoading = message.kind === 'loading'
+  useEffect(() => {
+    const dialog = dialogRef.current
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    dialog?.showModal()
+    return () => {
+      dialog?.close()
+      document.body.style.overflow = previousOverflow
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isLoading) dialogRef.current?.querySelector('button')?.focus()
+  }, [isLoading])
   const title =
     message.kind === 'loading'
       ? 'Procesando'
@@ -602,11 +712,14 @@ function StatusModal({ message, onClose }: { message: NonNullable<FlashMessage>;
           : 'Aviso'
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-live="assertive">
+    <dialog ref={dialogRef} className="status-dialog" aria-labelledby="status-title" aria-describedby="status-description" onCancel={(event) => {
+      event.preventDefault()
+      if (!isLoading) onClose()
+    }}>
       <div className={`status-modal ${message.kind}`}>
-        {isLoading ? <span className="modal-spinner" /> : message.kind === 'error' ? <AlertCircle size={34} /> : <span className="modal-check">✓</span>}
-        <h2>{title}</h2>
-        <p>{message.text}</p>
+        {isLoading ? <span className="modal-spinner" aria-hidden="true" /> : message.kind === 'error' ? <AlertCircle size={34} aria-hidden="true" /> : message.kind === 'info' ? <Info size={34} aria-hidden="true" /> : <span className="modal-check" aria-hidden="true">✓</span>}
+        <h2 id="status-title">{title}</h2>
+        <p id="status-description" role="status">{message.text}</p>
         {message.warnings && message.warnings.length > 0 && (
           <div className="modal-warnings">
             <strong>Advertencias detectadas</strong>
@@ -623,7 +736,7 @@ function StatusModal({ message, onClose }: { message: NonNullable<FlashMessage>;
           </button>
         )}
       </div>
-    </div>
+    </dialog>
   )
 }
 
@@ -647,6 +760,8 @@ function PhotoCapture({
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
   const [deviceId, setDeviceId] = useState('')
   const [compatMode, setCompatMode] = useState(false)
+  const statusLabel = active ? 'Activa' : value ? 'Capturada' : 'Pendiente'
+  const statusClass = active ? 'active' : value ? 'done' : 'pending'
 
   useEffect(() => {
     if (!active || !streamRef.current || !videoRef.current) return
@@ -733,18 +848,95 @@ function PhotoCapture({
       sh = Math.round(video.videoWidth / aspect)
       sy = Math.round((video.videoHeight - sh) / 2)
     }
+    const trimmed = trimDarkFrame(video, sx, sy, sw, sh)
+    sx = trimmed.sx
+    sy = trimmed.sy
+    sw = trimmed.sw
+    sh = trimmed.sh
+    // Capture the inside of the on-screen guide instead of keeping the camera margins.
+    const guideInset = 0
+    sx += Math.round(sw * guideInset)
+    sy += Math.round(sh * guideInset)
+    sw = Math.max(1, Math.round(sw * (1 - guideInset * 2)))
+    sh = Math.max(1, Math.round(sh * (1 - guideInset * 2)))
     context.fillStyle = '#ffffff'
     context.fillRect(0, 0, canvas.width, canvas.height)
-    context.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height)
+
+    const sourceRatio = sw / sh
+    const canvasRatio = canvas.width / canvas.height
+    let drawWidth = canvas.width
+    let drawHeight = canvas.height
+    let dx = 0
+    let dy = 0
+    if (sourceRatio > canvasRatio) {
+      drawHeight = Math.round(canvas.width / sourceRatio)
+      dy = Math.round((canvas.height - drawHeight) / 2)
+    } else {
+      drawWidth = Math.round(canvas.height * sourceRatio)
+      dx = Math.round((canvas.width - drawWidth) / 2)
+    }
+
+    context.drawImage(video, sx, sy, sw, sh, dx, dy, drawWidth, drawHeight)
     onChange(canvas.toDataURL('image/jpeg', 0.9))
     stopCamera()
+  }
+
+  function trimDarkFrame(video: HTMLVideoElement, sx: number, sy: number, sw: number, sh: number) {
+    const sample = document.createElement('canvas')
+    const sampleWidth = 180
+    const sampleHeight = Math.max(1, Math.round(sampleWidth * (sh / sw)))
+    sample.width = sampleWidth
+    sample.height = sampleHeight
+    const context = sample.getContext('2d', { willReadFrequently: true })
+    if (!context) return { sx, sy, sw, sh }
+    context.drawImage(video, sx, sy, sw, sh, 0, 0, sampleWidth, sampleHeight)
+    const pixels = context.getImageData(0, 0, sampleWidth, sampleHeight).data
+    const isVisible = (index: number) => pixels[index] + pixels[index + 1] + pixels[index + 2] > 45
+    let left = 0
+    let right = sampleWidth - 1
+    let top = 0
+    let bottom = sampleHeight - 1
+
+    for (; left < sampleWidth; left += 1) {
+      let count = 0
+      for (let y = 0; y < sampleHeight; y += 1) if (isVisible((y * sampleWidth + left) * 4)) count += 1
+      if (count > sampleHeight * 0.18) break
+    }
+    for (; right > left; right -= 1) {
+      let count = 0
+      for (let y = 0; y < sampleHeight; y += 1) if (isVisible((y * sampleWidth + right) * 4)) count += 1
+      if (count > sampleHeight * 0.18) break
+    }
+    for (; top < sampleHeight; top += 1) {
+      let count = 0
+      for (let x = 0; x < sampleWidth; x += 1) if (isVisible((top * sampleWidth + x) * 4)) count += 1
+      if (count > sampleWidth * 0.18) break
+    }
+    for (; bottom > top; bottom -= 1) {
+      let count = 0
+      for (let x = 0; x < sampleWidth; x += 1) if (isVisible((bottom * sampleWidth + x) * 4)) count += 1
+      if (count > sampleWidth * 0.18) break
+    }
+
+    const trimWidth = right - left + 1
+    const trimHeight = bottom - top + 1
+    if (trimWidth < sampleWidth * 0.45 || trimHeight < sampleHeight * 0.45) return { sx, sy, sw, sh }
+    return {
+      sx: sx + Math.round((left / sampleWidth) * sw),
+      sy: sy + Math.round((top / sampleHeight) * sh),
+      sw: Math.round((trimWidth / sampleWidth) * sw),
+      sh: Math.round((trimHeight / sampleHeight) * sh),
+    }
   }
 
   return (
     <div className="photo-capture">
       <div className="photo-card-header">
-        <strong>{label.replace('Tomar ', '')}</strong>
-        <span>{active ? 'Camara activa' : value ? 'Foto capturada' : 'Pendiente'}</span>
+        <div className="photo-title">
+          <span className={`photo-shape-token ${shape}`} />
+          <strong>{label.replace('Tomar ', '')}</strong>
+        </div>
+        <span className={`photo-status ${statusClass}`}>{statusLabel}</span>
       </div>
       <div className={`photo-preview ${shape}`}>
         {active ? (
@@ -760,24 +952,28 @@ function PhotoCapture({
         <span className="photo-frame-guide" />
       </div>
       {!active && (
-        <div className="camera-controls">
-          <button className="secondary" type="button" onClick={loadDevices}>
-            <RefreshCw size={16} /> Actualizar camaras
-          </button>
-          <label className="compat-toggle">
-            <input type="checkbox" checked={compatMode} onChange={(event) => setCompatMode(event.target.checked)} />
-            Modo compatibilidad
+        <div className="photo-settings">
+          <label className="camera-select">Cámara
+            <select value={deviceId} onChange={(event) => setDeviceId(event.target.value)}>
+              {devices.length > 0 ? (
+                devices.map((device, index) => (
+                  <option value={device.deviceId} key={device.deviceId}>{device.label || `Cámara ${index + 1}`}</option>
+                ))
+              ) : (
+                <option value="">Sin cámaras detectadas</option>
+              )}
+            </select>
           </label>
+          <div className="camera-controls">
+            <button className="secondary icon-button" type="button" onClick={loadDevices} aria-label="Actualizar cámaras" title="Actualizar cámaras">
+              <RefreshCw size={16} />
+            </button>
+            <label className="compat-toggle">
+              <input type="checkbox" checked={compatMode} onChange={(event) => setCompatMode(event.target.checked)} />
+              Compatibilidad
+            </label>
+          </div>
         </div>
-      )}
-      {devices.length > 0 && !active && (
-        <label className="camera-select">Camara
-          <select value={deviceId} onChange={(event) => setDeviceId(event.target.value)}>
-            {devices.map((device, index) => (
-              <option value={device.deviceId} key={device.deviceId}>{device.label || `Camara ${index + 1}`}</option>
-            ))}
-          </select>
-        </label>
       )}
       <div className="photo-actions">
         {!active ? (
@@ -1016,7 +1212,7 @@ function App() {
     }
 
     setBusyAction('extract')
-    showMessage('loading', 'Analizando documento...')
+    showMessage('loading', tipo === 'qr_acta' ? 'Leyendo QR y consultando enlace...' : 'Analizando documento...')
 
     const body = new FormData()
     body.append('tipo', tipo)
@@ -1080,8 +1276,13 @@ function App() {
     if (!selected) return
     setBusyAction('excel')
     showMessage('loading', 'Generando Excel...')
+    const cleanForm = normalizeDeep(operatorForm)
     const response = await fetch(`/api/solicitudes/${selected.id}/excel`, {
-      headers: authHeaders(token),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
+      body: JSON.stringify({
+        datos: cleanForm,
+      }),
     })
     if (!response.ok) {
       const payload = await readApiResponse(response)
@@ -1104,19 +1305,39 @@ function App() {
 
   return (
     <main className="app-shell">
+      <a className="skip-link" href="#contenido">Ir al contenido</a>
+      <header className="topbar">
+        <div className="topbar-inner">
+          <a className="brand" href="/" aria-label="SEIEM, inicio de solicitud">
+            <span className="brand-wordmark">SEIEM<span aria-hidden="true">.</span></span>
+            <span className="brand-description">Servicios Educativos Integrados<br />al Estado de México</span>
+          </a>
+          <div className="topbar-context">
+            <span className="platform-label">Plataforma de filiación</span>
+            {view === 'revision' && token
+              ? <span className="operator-badge"><Lock size={14} aria-hidden="true" /> {username}</span>
+              : <span className="topbar-label">{view === 'revision' ? 'Acceso de personal' : 'Registro de solicitantes'}</span>}
+          </div>
+        </div>
+      </header>
       <section className={`workspace ${view}-workspace`}>
-        <header className="topbar">
+        <header className="page-header" id="contenido" tabIndex={-1}>
           <div>
-            <p className="eyebrow">{view === 'solicitante' ? 'Inicio de solicitud' : 'Panel de revision'}</p>
+            <p className="eyebrow">Filiación <ChevronRight size={13} aria-hidden="true" /> {view === 'solicitante' ? 'Nueva solicitud' : 'Gestión de solicitudes'}</p>
             <h1>
               {view === 'solicitante'
-                ? 'Solicitud de filiacion'
+                ? 'Solicitud de filiación'
                 : revisionSolicitudId
-                  ? 'Detalle de revision'
-                  : 'Revision de solicitudes'}
+                  ? 'Revisión del expediente'
+                  : 'Revisión de solicitudes'}
             </h1>
+            <p className="page-description">{view === 'solicitante'
+              ? 'Completa tus datos y referencias para iniciar tu trámite de filiación.'
+              : !token ? 'Ingresa con tu cuenta de personal para revisar y gestionar los expedientes.'
+              : revisionSolicitudId ? 'Verifica los documentos y completa la información del solicitante.'
+              : 'Consulta los registros recibidos y da seguimiento a cada expediente.'}</p>
           </div>
-          {view === 'revision' && token && <span className="operator-badge"><Lock size={16} /> {username}</span>}
+          <span className="page-tag"><span aria-hidden="true" />{view === 'solicitante' ? 'Captura de información' : 'Área de revisión'}</span>
         </header>
 
         {flash && <StatusModal message={flash} onClose={() => setFlash(null)} />}
@@ -1131,14 +1352,22 @@ function App() {
             onSubmit={submitSolicitud}
           />
         ) : !token ? (
+          <div className="login-layout">
+          <div className="login-intro">
+            <Lock size={28} aria-hidden="true" />
+            <h2>Gestión de filiación</h2>
+            <p>Un espacio para consultar solicitudes, verificar documentos y completar los registros de filiación.</p>
+            <span>Uso exclusivo del personal autorizado</span>
+          </div>
           <form className="login-panel" onSubmit={loginOperator}>
-            <div className="section-title"><Lock size={20} /><h2>Acceso de revisión</h2></div>
-            <label>Usuario<input value={login.username} onChange={(event) => setLogin({ ...login, username: event.target.value })} /></label>
-            <label>Contraseña<input type="password" value={login.password} onChange={(event) => setLogin({ ...login, password: event.target.value })} /></label>
+            <div><p className="eyebrow">Acceso de personal</p><h2>Iniciar sesión</h2></div>
+            <label>Usuario<input autoComplete="username" required value={login.username} onChange={(event) => setLogin({ ...login, username: event.target.value })} /></label>
+            <label>Contraseña<input type="password" autoComplete="current-password" required value={login.password} onChange={(event) => setLogin({ ...login, password: event.target.value })} /></label>
             <button className="primary" type="submit" disabled={busyAction === 'login'}>
-              {busyAction === 'login' ? 'Validando...' : 'Entrar'}
+              {busyAction === 'login' ? 'Validando...' : 'Ingresar al panel'}<ArrowUpRight size={17} aria-hidden="true" />
             </button>
           </form>
+          </div>
         ) : (
           <section className={`operator-grid ${revisionSolicitudId ? 'detail-mode' : 'list-mode'}`}>
             {!revisionSolicitudId && (
@@ -1174,8 +1403,8 @@ function App() {
                       <th>CURP</th>
                       <th>Contacto</th>
                       <th>Fecha</th>
-                      <th>Status</th>
-                      <th>Accion</th>
+                      <th>Estado</th>
+                      <th>Acción</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1188,10 +1417,10 @@ function App() {
                         <td data-label="CURP">{solicitud.curp || solicitud.datos?.curp || 'Pendiente'}</td>
                         <td data-label="Contacto">{solicitudEmail(solicitud)}</td>
                         <td data-label="Fecha">{new Date(solicitud.created_at).toLocaleString()}</td>
-                        <td data-label="Status">
+                        <td data-label="Estado">
                           <span className={`status-pill ${statusClassName(solicitud.estado)}`}>{solicitud.estado}</span>
                         </td>
-                        <td data-label="Accion">
+                        <td data-label="Acción">
                           <button className="review-button" type="button" onClick={() => navigateToRevision(solicitud)}>
                             <FileSearch size={16} /> Revisar
                           </button>
@@ -1200,7 +1429,7 @@ function App() {
                     ))}
                     {solicitudes.length === 0 && (
                       <tr>
-                        <td className="empty-table" colSpan={6}>No hay solicitudes para mostrar.</td>
+                        <td className="empty-table" colSpan={6}><ListChecks size={28} aria-hidden="true" /><strong>Aún no hay solicitudes</strong><span>Los registros recibidos aparecerán aquí para su revisión.</span></td>
                       </tr>
                     )}
                   </tbody>
@@ -1210,6 +1439,8 @@ function App() {
             )}
 
             {revisionSolicitudId && (
+            <div className="form-layout">
+            {selected && <SectionNav items={reviewSections} review />}
             <div className="review-panel">
               {selected ? (
                 <>
@@ -1233,21 +1464,22 @@ function App() {
                     </div>
                   </section>
 
-                  <section className="document-panel">
+                  <section className="document-panel" id="documentos" aria-label="Documentos">
                     <form className="upload-panel" onSubmit={handleExtraction}>
-                      <div className="section-title"><FileSearch size={20} /><h2>Análisis de documentos</h2></div>
-                      <div className="segmented">
-                        <button type="button" className={tipo === 'ine' ? 'selected' : ''} onClick={() => setTipo('ine')}>INE</button>
-                        <button type="button" className={tipo === 'acta' ? 'selected' : ''} onClick={() => setTipo('acta')}>Acta</button>
+                      <SectionHeading number="01" title="Análisis de documentos" description="Selecciona el tipo de documento y carga una imagen o un PDF para obtener sus datos." />
+                      <div className="segmented" role="group" aria-label="Tipo de documento">
+                        <button type="button" aria-pressed={tipo === 'ine'} className={tipo === 'ine' ? 'selected' : ''} onClick={() => setTipo('ine')}>INE</button>
+                        <button type="button" aria-pressed={tipo === 'acta'} className={tipo === 'acta' ? 'selected' : ''} onClick={() => setTipo('acta')}>Acta</button>
+                        <button type="button" aria-pressed={tipo === 'qr_acta'} className={tipo === 'qr_acta' ? 'selected' : ''} onClick={() => setTipo('qr_acta')}><QrCode size={16} /> QR acta</button>
                       </div>
                       <label className="file-drop">
                         <Upload size={22} />
-                        <span>{file ? file.name : 'Imagen o PDF recibido'}</span>
+                        <span>{file ? file.name : 'Seleccionar imagen o PDF'}</span>
                         <input type="file" accept=".jpg,.jpeg,.png,.bmp,.tif,.tiff,.webp,.pdf" onChange={(event: ChangeEvent<HTMLInputElement>) => setFile(event.target.files?.[0] ?? null)} />
                       </label>
-                      {tipo === 'ine' && <label className="inline-label">Pagina PDF<input type="number" min="1" value={pagina} onChange={(event) => setPagina(Number(event.target.value))} /></label>}
-                      <button className="secondary" type="submit" disabled={busyAction === 'extract'}>
-                        <FileSearch size={18} />{busyAction === 'extract' ? 'Analizando...' : 'Analizar documento'}
+                      {tipo === 'ine' && <label className="inline-label">Página PDF<input type="number" min="1" value={pagina} onChange={(event) => setPagina(Number(event.target.value))} /></label>}
+                      <button className="secondary" type="submit" disabled={!file || busyAction === 'extract'}>
+                        {tipo === 'qr_acta' ? <QrCode size={18} /> : <FileSearch size={18} />}{documentActionLabel(tipo, busyAction === 'extract')}
                       </button>
                       {warnings.length > 0 && <ul className="warnings">{warnings.map((warning: string, index: number) => <li key={index}>{warning}</li>)}</ul>}
                     </form>
@@ -1269,9 +1501,11 @@ function App() {
                 <p className="notice">Cargando solicitud...</p>
               )}
             </div>
+            </div>
             )}
           </section>
         )}
+        <footer className="site-footer"><span>SEIEM <span aria-hidden="true">/</span> Plataforma de filiación</span><span>Servicios Educativos Integrados al Estado de México</span></footer>
       </section>
     </main>
   )
@@ -1293,9 +1527,11 @@ function SolicitanteForm({
   onSubmit: () => void
 }) {
   return (
+    <div className="form-layout">
+    <SectionNav items={applicantSections} />
     <section className="form-flow applicant-flow">
-      <section className="form-section">
-        <div className="section-title"><UserRound size={20} /><h2>Datos del solicitante</h2></div>
+      <section className="form-section" id="datos-solicitante">
+        <SectionHeading number="01" title="Datos del solicitante" description="Escribe tu nombre y datos de contacto como aparecen en tus documentos." />
         <NameFields
           label="Nombre del solicitante"
           value={form.nombrePartes}
@@ -1306,8 +1542,8 @@ function SolicitanteForm({
         />
         <div className="form-grid four">
           <label>RFC<input value={form.rfc} onChange={(event) => setField('rfc', event.target.value.toUpperCase())} /></label>
-          <label>Telefono<input value={form.telefono} onChange={(event) => setField('telefono', event.target.value.replace(/\D/g, ''))} /></label>
-          <label>Correo electronico<input type="email" value={form.correoElectronico} onChange={(event) => setField('correoElectronico', event.target.value)} /></label>
+          <label>Teléfono<input type="tel" inputMode="tel" value={form.telefono} onChange={(event) => setField('telefono', event.target.value.replace(/\D/g, ''))} /></label>
+          <label>Correo electrónico<input type="email" value={form.correoElectronico} onChange={(event) => setField('correoElectronico', event.target.value)} /></label>
           <CivilStatusFields
             estadoCivil={form.estadoCivil}
             conyuge={form.nombreConyuge}
@@ -1321,16 +1557,17 @@ function SolicitanteForm({
         </div>
       </section>
 
-      <section className="form-section">
-        <AddressFields label="Domicilio particular" value={form.domicilio} onChange={setAddress} />
+      <section className="form-section" id="domicilio-solicitante">
+        <SectionHeading number="02" title="Domicilio particular" description="Consulta tu código postal para seleccionar la colonia correspondiente." />
+        <AddressFields label="Dirección" value={form.domicilio} onChange={setAddress} />
       </section>
 
-      <section className="references">
-        <div className="section-title"><h2>Referencias</h2></div>
+      <section className="references" id="referencias-solicitante">
+        <SectionHeading number="03" title="Referencias" description="Registra dos conocidos y dos familiares, con su nombre y domicilio." />
         <div className="reference-grid">
           {form.referencias.map((reference, index) => (
             <div className="reference-item" key={index}>
-              <strong>{referenceLabel(form.referencias, index)}</strong>
+              <h3>{referenceLabel(form.referencias, index)}</h3>
               <NameFields
                 label="Nombre"
                 value={reference.nombrePartes}
@@ -1346,9 +1583,11 @@ function SolicitanteForm({
       </section>
 
       <div className="actions-row">
+        <p className="action-note"><Check size={16} aria-hidden="true" />Revisa la información antes de enviar tu solicitud.</p>
         <button className="primary" type="button" onClick={onSubmit} disabled={saving}><Save size={18} />{saving ? 'Enviando...' : 'Enviar solicitud'}</button>
       </div>
     </section>
+    </div>
   )
 }
 
@@ -1387,20 +1626,20 @@ function FullFiliacionForm({
 
   return (
     <>
-      <section className="form-section">
-        <div className="section-title"><h2>Datos administrativos</h2></div>
+      <section className="form-section" id="administrativos">
+        <SectionHeading number="02" title="Datos administrativos" />
         <div className="form-grid four">
-          <label>Filiacion / RFC<input value={form.rfc} onChange={(event) => setField('rfc', event.target.value.toUpperCase())} /></label>
+          <label>Filiación / RFC<input value={form.rfc} onChange={(event) => setField('rfc', event.target.value.toUpperCase())} /></label>
           <label>CURP<input value={form.curp} onChange={(event) => setField('curp', event.target.value.toUpperCase())} /></label>
           <label>Clave de cobro<input value={form.claveCobro} onChange={(event) => setField('claveCobro', event.target.value.toUpperCase())} /></label>
-          <label>Descripcion de la clave<input value={form.descripcionClave} onChange={(event) => setField('descripcionClave', event.target.value.toUpperCase())} /></label>
+          <label>Descripción de la clave<input value={form.descripcionClave} onChange={(event) => setField('descripcionClave', event.target.value.toUpperCase())} /></label>
           <label>Lugar<input value={form.lugar} onChange={(event) => setField('lugar', event.target.value.toUpperCase())} /></label>
           <label>Fecha<input type="date" value={form.fechaFiliacion} onChange={(event) => setField('fechaFiliacion', event.target.value)} /></label>
         </div>
       </section>
 
-      <section className="form-section">
-        <div className="section-title"><h2>Identidad y registro civil</h2></div>
+      <section className="form-section" id="identidad">
+        <SectionHeading number="03" title="Identidad y registro civil" />
         <NameFields
           label="Nombre"
           value={form.nombrePartes}
@@ -1410,11 +1649,11 @@ function FullFiliacionForm({
           }}
         />
         <div className="form-grid four">
-          <label>Fecha nacimiento<input type="date" value={form.fechaNacimiento} onChange={(event) => setField('fechaNacimiento', event.target.value)} /></label>
-          <label>Lugar nacimiento<input value={form.lugarNacimiento} onChange={(event) => setField('lugarNacimiento', event.target.value.toUpperCase())} /></label>
+          <label>Fecha de nacimiento<input type="date" value={form.fechaNacimiento} onChange={(event) => setField('fechaNacimiento', event.target.value)} /></label>
+          <label>Lugar de nacimiento<input value={form.lugarNacimiento} onChange={(event) => setField('lugarNacimiento', event.target.value.toUpperCase())} /></label>
           <label>Sexo<input value={form.sexo} onChange={(event) => setField('sexo', event.target.value.toUpperCase())} /></label>
           <label>No. acta<input value={form.noActa} onChange={(event) => setField('noActa', event.target.value.toUpperCase())} /></label>
-          <label>Anio<input value={form.anioActa} maxLength={4} onChange={(event) => setField('anioActa', event.target.value.replace(/\D/g, '').slice(0, 4))} /></label>
+          <label>Año<input value={form.anioActa} maxLength={4} onChange={(event) => setField('anioActa', event.target.value.replace(/\D/g, '').slice(0, 4))} /></label>
           <label>Libro<input value={form.libro} onChange={(event) => setField('libro', event.target.value.toUpperCase())} /></label>
           <label>Clase<input value={form.clase} onChange={(event) => setField('clase', event.target.value.toUpperCase())} /></label>
           <label>Cartilla S.M.N.<input value={form.cartillaSmn} onChange={(event) => setField('cartillaSmn', event.target.value.toUpperCase())} /></label>
@@ -1439,8 +1678,8 @@ function FullFiliacionForm({
         </div>
       </section>
 
-      <section className="form-section">
-        <div className="section-title"><h2>Estado civil y contacto</h2></div>
+      <section className="form-section" id="contacto">
+        <SectionHeading number="04" title="Estado civil y contacto" />
         <div className="form-grid four">
           <CivilStatusFields
             estadoCivil={form.estadoCivil}
@@ -1452,21 +1691,22 @@ function FullFiliacionForm({
               setField('nombreConyuge', fullName)
             }}
           />
-          <label>Correo electronico<input value={form.correoElectronico} onChange={(event) => setField('correoElectronico', event.target.value)} /></label>
-          <label>Telefono<input value={form.telefono} onChange={(event) => setField('telefono', event.target.value.replace(/\D/g, ''))} /></label>
+          <label>Correo electrónico<input type="email" value={form.correoElectronico} onChange={(event) => setField('correoElectronico', event.target.value)} /></label>
+          <label>Teléfono<input type="tel" inputMode="tel" value={form.telefono} onChange={(event) => setField('telefono', event.target.value.replace(/\D/g, ''))} /></label>
         </div>
       </section>
 
-      <section className="form-section">
-        <AddressFields label="Domicilio" value={form.domicilio} onChange={(domicilio) => setField('domicilio', domicilio)} />
+      <section className="form-section" id="domicilio-revision">
+        <SectionHeading number="05" title="Domicilio particular" />
+        <AddressFields label="Dirección" value={form.domicilio} onChange={(domicilio) => setField('domicilio', domicilio)} />
       </section>
 
-      <section className="references">
-        <div className="section-title"><h2>Referencias</h2></div>
+      <section className="references" id="referencias-revision">
+        <SectionHeading number="06" title="Referencias" />
         <div className="reference-grid">
           {form.referencias.map((reference, index) => (
             <div className="reference-item" key={index}>
-              <strong>{referenceLabel(form.referencias, index)}</strong>
+              <h3>{referenceLabel(form.referencias, index)}</h3>
               <NameFields
                 label="Nombre"
                 value={reference.nombrePartes}
@@ -1481,25 +1721,25 @@ function FullFiliacionForm({
         </div>
       </section>
 
-      <section className="form-section">
-        <div className="section-title"><Camera size={20} /><h2>Fotografias</h2></div>
+      <section className="form-section photo-section" id="fotografias">
+        <SectionHeading number="07" title="Fotografías" description="Centra el rostro dentro de la guía y captura cada fotografía con iluminación uniforme." />
         <div className="photo-grid">
           <PhotoCapture
-            label="Frente cuadro"
+            label="Frente · formato cuadrado"
             aspect={1}
             shape="square"
             value={form.fotos.frenteCuadro}
             onChange={(value) => setField('fotos', { ...form.fotos, frenteCuadro: value })}
           />
           <PhotoCapture
-            label="Frente ovalo"
+            label="Frente · formato ovalado"
             aspect={0.72}
             shape="oval"
             value={form.fotos.frenteOvalo}
             onChange={(value) => setField('fotos', { ...form.fotos, frenteOvalo: value })}
           />
           <PhotoCapture
-            label="Perfil ovalo"
+            label="Perfil · formato ovalado"
             aspect={0.72}
             shape="oval"
             value={form.fotos.perfilOvalo}
@@ -1508,12 +1748,12 @@ function FullFiliacionForm({
         </div>
       </section>
 
-      <section className="form-section">
-        <div className="section-title"><h2>Rasgos fisicos</h2></div>
+      <section className="form-section" id="rasgos">
+        <SectionHeading number="08" title="Rasgos físicos" />
         <div className="form-grid four">
           {Object.entries(form.rasgos).map(([key, value]) => (
             <label key={key}>
-              {key}
+              {{ tonoPiel: 'Tono de piel', pelo: 'Pelo', frente: 'Frente', cejas: 'Cejas', ojos: 'Ojos', nariz: 'Nariz', boca: 'Boca', estatura: 'Estatura', senasVisibles: 'Señas visibles' }[key]}
               {rasgoOptions[key as keyof CaptureForm['rasgos']].length ? (
                 <select value={value} onChange={(event) => setField('rasgos', { ...form.rasgos, [key]: event.target.value })}>
                   <option value="">Selecciona</option>
@@ -1529,8 +1769,8 @@ function FullFiliacionForm({
         </div>
       </section>
 
-      <section className="form-section">
-        <div className="section-title"><h2>Notas de revision</h2></div>
+      <section className="form-section" id="notas">
+        <SectionHeading number="09" title="Notas de revisión" />
         <label className="notes-label">Notas de revisión<textarea value={notes} onChange={(event) => setNotes(event.target.value.toUpperCase())} /></label>
       </section>
 
@@ -1538,7 +1778,7 @@ function FullFiliacionForm({
         <button className="secondary" type="button" onClick={onDownloadExcel} disabled={downloading}>
           <Download size={18} />{downloading ? 'Generando...' : 'Descargar Excel'}
         </button>
-        <button className="primary" type="button" onClick={onSave} disabled={saving}><Save size={18} />{saving ? 'Guardando...' : 'Guardar revision'}</button>
+        <button className="primary" type="button" onClick={onSave} disabled={saving}><Save size={18} />{saving ? 'Guardando...' : 'Guardar revisión'}</button>
       </div>
     </>
   )

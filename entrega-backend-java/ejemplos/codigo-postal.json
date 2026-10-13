@@ -1,0 +1,11 @@
+{
+  "cp": "00000",
+  "opciones": [
+    {
+      "asentamiento": "COLONIA DEMO",
+      "municipio": "MUNICIPIO DEMO",
+      "estado": "ESTADO DEMO",
+      "ciudad": null
+    }
+  ]
+}

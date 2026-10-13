@@ -1,0 +1,15 @@
+numpy
+opencv-python
+mediapipe==0.10.21
+pytesseract
+PyMuPDF
+fastapi
+uvicorn[standard]
+sqlalchemy
+pymysql
+pydantic-settings
+python-multipart
+httpx
+zxing-cpp
+pytest
+cryptography

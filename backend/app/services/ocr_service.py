@@ -45,7 +45,7 @@ async def _copy_limited(upload: UploadFile, destination: BinaryIO, max_bytes: in
 
 
 async def extract_document(tipo: str, upload: UploadFile, pagina: int = 1) -> dict:
-    if tipo not in {"ine", "acta"}:
+    if tipo not in {"ine", "acta", "qr_acta"}:
         raise HTTPException(status_code=400, detail="Tipo de documento invalido.")
 
     path = await save_upload_temporarily(upload)
