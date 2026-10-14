@@ -76,6 +76,7 @@ svg {
 }
 .app-shell {
   min-height: 100vh;
+  text-transform: uppercase;
 }
 .skip-link {
   position: fixed;
@@ -394,6 +395,10 @@ fieldset {
 .address-block {
   grid-template-columns: minmax(0, 1.25fr) minmax(0, 1.75fr) repeat(2, minmax(0, .7fr));
 }
+.full-address { grid-column: 1 / -1; min-width: 0; }
+.full-name { grid-column: 1 / -1; min-width: 0; }
+.review-lock-fieldset { display: block; border: 0; padding: 0; margin: 0; min-width: 0; }
+.review-lock-owner { display: inline-flex; align-items: center; gap: 5px; }
 .colony-select {
   grid-column: span 2;
 }
@@ -616,6 +621,12 @@ fieldset {
   min-width: 0;
   overflow-x: auto;
 }
+
+.requests-search { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; max-width: 540px; }
+.requests-search input { width: 100%; min-width: 0; }
+.requests-pagination { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 20px 0; }
+.requests-pagination > div { display: flex; align-items: center; gap: 12px; }
+.requests-pagination button { width: 42px; height: 42px; padding: 0; justify-content: center; }
 .requests-table {
   width: 100%;
   min-width: 960px;

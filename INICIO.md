@@ -31,13 +31,13 @@ Edita `.env` y cambia `CAMBIA_ESTA_CONTRASENA` por la contrasena real.
 Desde la raiz del proyecto:
 
 ```powershell
-.\venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+.\venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8001
 ```
 
 Prueba:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/api/health
+Invoke-RestMethod http://127.0.0.1:8001/api/health
 ```
 
 ## 3. Arrancar frontend
@@ -80,8 +80,8 @@ OPERATOR_TOKEN=dev-operator-token
 Para ver solicitudes, abre la app y entra a `Operador`. El endpoint requiere token:
 
 ```powershell
-$login = Invoke-RestMethod http://127.0.0.1:8000/api/auth/login -Method Post -ContentType 'application/json' -Body '{"username":"operador","password":"cambia-esta-contrasena"}'
-Invoke-RestMethod http://127.0.0.1:8000/api/solicitudes -Headers @{ Authorization = "Bearer $($login.token)" }
+$login = Invoke-RestMethod http://127.0.0.1:8001/api/auth/login -Method Post -ContentType 'application/json' -Body '{"username":"operador","password":"cambia-esta-contrasena"}'
+Invoke-RestMethod http://127.0.0.1:8001/api/solicitudes -Headers @{ Authorization = "Bearer $($login.token)" }
 ```
 
 En el panel del operador, al abrir una solicitud aparece el boton `Descargar Excel`. Ese boton genera una copia de `Plantilla_filiacion.xlsx` con los datos revisados.
@@ -165,7 +165,7 @@ Para que el CP autocomplete colonia, municipio y estado necesitas cargar el cata
 Prueba un CP:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/api/codigos-postales/52280
+Invoke-RestMethod http://127.0.0.1:8001/api/codigos-postales/52280
 ```
 
 ## 7. Limpieza de fondo de fotografias

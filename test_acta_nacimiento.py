@@ -18,6 +18,9 @@ from acta_nacimiento import (
     interpretar_acta,
     interpretar_qr,
     corregir_numero_acta_visual,
+    decodificar_qr,
+    leer_qr,
+    ocr_celda_registro,
     limpiar_por_patron,
     limpiar_valor,
     preparar_foto,
@@ -180,7 +183,7 @@ class ActaTests(unittest.TestCase):
             Palabra("187", 548, 242, 566, 252),
         ]
 
-        def celda(_imagen, _caja, campo, estricto=True):
+        def celda(_imagen, _caja, campo, estricto=True, limite=None):
             return {
                 "oficialia": "0003",
                 "fecha_registro": "21/04/2004",
@@ -192,6 +195,59 @@ class ActaTests(unittest.TestCase):
             registro = extraer_registro_desde_imagen(np.full((500, 500, 3), 255, dtype=np.uint8))
 
         self.assertEqual(registro["numero_acta"], "787")
+
+    def test_registro_completo_solo_confirma_numero_acta(self):
+        existentes = {"oficialia": "0003", "fecha_registro": "21/04/2004", "libro": "4", "numero_acta": "787"}
+        with patch("acta_nacimiento.ocr_region") as region, patch("acta_nacimiento.ocr_celda_registro", return_value="787") as celda:
+            registro = extraer_registro_desde_imagen(np.full((792, 612, 3), 255, dtype=np.uint8), existentes)
+        region.assert_not_called()
+        self.assertEqual(celda.call_count, 1)
+        self.assertEqual(registro, existentes)
+
+    def test_celda_detiene_reintentos_al_confirmar_dos_lecturas(self):
+        with patch("acta_nacimiento.pytesseract.image_to_string", return_value="787") as ocr:
+            valor = ocr_celda_registro(np.full((792, 612, 3), 255, dtype=np.uint8), (520, 220, 592, 265), "numero_acta")
+        self.assertEqual(valor, "787")
+        self.assertEqual(ocr.call_count, 2)
+
+    def test_celda_no_acepta_lecturas_contradictorias(self):
+        with patch("acta_nacimiento.pytesseract.image_to_string", side_effect=["787", "887", "987"]):
+            valor = ocr_celda_registro(np.full((792, 612, 3), 255, dtype=np.uint8), (520, 220, 592, 265), "numero_acta")
+        self.assertIsNone(valor)
+
+    def test_registro_conserva_datos_si_se_agota_presupuesto(self):
+        existentes = {"oficialia": "0003", "fecha_registro": None, "libro": "4", "numero_acta": "787"}
+        with patch("acta_nacimiento.monotonic", side_effect=[0] + [11] * 20), patch("acta_nacimiento.ocr_region") as region, patch("acta_nacimiento.ocr_celda_registro") as celda:
+            registro = extraer_registro_desde_imagen(np.full((792, 612, 3), 255, dtype=np.uint8), existentes)
+        region.assert_not_called()
+        celda.assert_not_called()
+        self.assertEqual(registro, existentes)
+
+    def test_qr_ausente_no_dispara_cientos_de_variantes(self):
+        with patch("acta_nacimiento.zxingcpp") as zxing, patch("acta_nacimiento.cv2.QRCodeDetector") as detector:
+            zxing.read_barcodes.return_value = []
+            contenido, detectado = decodificar_qr(np.full((600, 600, 3), 255, dtype=np.uint8))
+        self.assertEqual((contenido, detectado), ("", False))
+        self.assertEqual(zxing.read_barcodes.call_count, 2)
+        detector.assert_not_called()
+
+    def test_qr_fallback_tiene_intentos_acotados(self):
+        with patch("acta_nacimiento.zxingcpp", None), patch("acta_nacimiento.cv2.QRCodeDetector") as detector:
+            detector.return_value.detectAndDecode.return_value = ("", None, None)
+            self.assertEqual(decodificar_qr(np.full((600, 600, 3), 255, dtype=np.uint8)), ("", False))
+            self.assertEqual(detector.return_value.detectAndDecode.call_count, 2)
+
+    def test_qr_real_conserva_contenido_y_tipo(self):
+        contenido = "Libro:04,|Acta:007,|Sexo:M"
+        qr = cv2.QRCodeEncoder_create().encode(contenido)
+        qr = cv2.copyMakeBorder(qr, 4, 4, 4, 4, cv2.BORDER_CONSTANT, value=255)
+        qr = cv2.resize(qr, (250, 250), interpolation=cv2.INTER_NEAREST)
+        imagen = np.full((1584, 1224, 3), 255, dtype=np.uint8)
+        imagen[1200:1450, 950:1200] = cv2.cvtColor(qr, cv2.COLOR_GRAY2BGR)
+        codigos = leer_qr(imagen)
+        datos = next(codigo for codigo in codigos if codigo["tipo"] == "datos")
+        self.assertEqual(datos["contenido"], contenido)
+        self.assertEqual(datos["campos"]["acta"], "007")
 
     def test_prepara_foto_recorta_hoja_con_perspectiva(self):
         imagen = np.full((900, 700, 3), 30, dtype=np.uint8)

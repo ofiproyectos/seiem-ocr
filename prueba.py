@@ -9,12 +9,20 @@ from pathlib import Path
 import re
 import shutil
 import sys
+from threading import Lock
 
 import cv2
 import numpy as np
 import pytesseract
 
 from archivos import cargar_pagina, leer_imagen
+
+_TESSERACT_CONFIGURED = {"cmd": None, "languages_checked": False}
+_TESSERACT_CONFIG_LOCK = Lock()
+
+
+class TesseractConfigurationError(RuntimeError):
+    pass
 
 
 # Coordenadas relativas a la tarjeta, no a la fotografía. Distribución del
@@ -33,8 +41,25 @@ REGIONES = {
 
 
 def configurar_tesseract(ejecutable=None):
+    with _TESSERACT_CONFIG_LOCK:
+        _configurar_tesseract(ejecutable)
+
+
+def _configurar_tesseract(ejecutable=None):
+    requested = ejecutable or os.environ.get("TESSERACT_CMD")
+    if requested:
+        requested = str(Path(requested).resolve()) if Path(requested).is_file() else shutil.which(requested) or requested
+    if (
+        _TESSERACT_CONFIGURED["languages_checked"]
+        and (requested is None or requested == _TESSERACT_CONFIGURED["cmd"])
+        and pytesseract.pytesseract.tesseract_cmd == _TESSERACT_CONFIGURED["cmd"]
+        and Path(_TESSERACT_CONFIGURED["cmd"]).is_file()
+    ):
+        return
+
+    _TESSERACT_CONFIGURED["languages_checked"] = False
     candidatos = [
-        ejecutable or os.environ.get("TESSERACT_CMD"),
+        requested,
         shutil.which("tesseract"),
         str(Path.home() / "AppData/Local/Tesseract-OCR/tesseract.exe"),
         r"C:\Program Files\Tesseract-OCR\tesseract.exe",
@@ -43,12 +68,15 @@ def configurar_tesseract(ejecutable=None):
         candidatos = candidatos[:1]
     for candidato in candidatos:
         if candidato and (Path(candidato).is_file() or shutil.which(candidato)):
+            candidato = str(Path(candidato if Path(candidato).is_file() else shutil.which(candidato)).resolve())
             pytesseract.pytesseract.tesseract_cmd = candidato
+            _TESSERACT_CONFIGURED["cmd"] = candidato
             break
     else:
-        raise RuntimeError("No se encontró Tesseract. Indica su ruta con --tesseract.")
+        raise TesseractConfigurationError("No se encontró Tesseract. Indica su ruta con --tesseract.")
     if "spa" not in pytesseract.get_languages(config=""):
-        raise RuntimeError("Tesseract necesita el idioma español (spa.traineddata).")
+        raise TesseractConfigurationError("Tesseract necesita el idioma español (spa.traineddata).")
+    _TESSERACT_CONFIGURED["languages_checked"] = True
 
 
 def cargar_imagen(ruta):
@@ -298,7 +326,20 @@ def evaluar_lecturas(campo, lecturas):
 
 
 def extraer_campo_con_reintentos(campo, roi):
-    lecturas = [leer_region(roi, variante) for variante in ("normalizada", "gris", "otsu")]
+    primera = leer_region(roi, "normalizada")
+    valor_rapido = interpretar_campo(campo, primera["texto"])
+    if valor_rapido is not None and primera["confianza_ocr"] >= 80:
+        return valor_rapido, [primera], {
+            "estado": "confirmado",
+            "variantes_coincidentes": 1,
+            "variantes_confianza_alta": 1,
+            "confianza_ocr_maxima": primera["confianza_ocr"],
+            "consenso_amplio": False,
+            "candidatos": {valor_rapido: {"variantes": ["normalizada"], "confianza_maxima": primera["confianza_ocr"]}},
+            "relectura_aplicada": False,
+        }, []
+
+    lecturas = [primera, leer_region(roi, "gris"), leer_region(roi, "otsu")]
     valor, resuelto, calidad = evaluar_lecturas(campo, lecturas)
     reintentos = not resuelto
     if reintentos:
@@ -328,7 +369,10 @@ def extraer_imagen_ine(imagen, ya_recortada=False):
     for campo, (x1, y1, x2, y2) in REGIONES.items():
         roi = tarjeta[int(y1 * alto):int(y2 * alto), int(x1 * ancho):int(x2 * ancho)]
         if campo in ("nombre", "domicilio"):
-            detalle = [leer_region(roi, variante) for variante in ("normalizada", "gris", "otsu")]
+            primera = leer_region(roi, "normalizada")
+            detalle = [primera]
+            if not primera["texto"].strip() or primera["confianza_ocr"] < 35:
+                detalle.extend(leer_region(roi, variante) for variante in ("gris", "otsu"))
             lecturas = [lectura["texto"] for lectura in detalle]
             textos[campo], detalle_ocr[campo] = lecturas, detalle
             calidad_campos[campo] = {"estado": "texto_libre", "confianza_ocr": detalle[0]["confianza_ocr"]}

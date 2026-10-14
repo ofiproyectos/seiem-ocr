@@ -31,6 +31,7 @@ class SolicitudUpdate(BaseModel):
 
 
 class SolicitudRead(SolicitudBase):
+    revision_token: str | None = None
     id: str
     folio: str | None = None
     created_at: datetime

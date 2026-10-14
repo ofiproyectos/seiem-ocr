@@ -43,6 +43,13 @@ def ensure_runtime_columns() -> None:
     statements = [
         "ALTER TABLE solicitudes ADD COLUMN revisado_por VARCHAR(80) NULL",
         "ALTER TABLE solicitudes ADD COLUMN revisado_at DATETIME NULL",
+        "ALTER TABLE bloqueos_revision ADD COLUMN bloqueado_por INT NULL",
+        "ALTER TABLE bloqueos_revision ADD COLUMN bloqueado_desde DATETIME NULL",
+        "ALTER TABLE bloqueos_revision ADD COLUMN browser_session VARCHAR(120) NULL",
+        "ALTER TABLE bloqueos_revision CHANGE COLUMN lease bloqueo_token VARCHAR(120) NOT NULL",
+        "ALTER TABLE bloqueos_revision CHANGE COLUMN expires_at bloqueo_expira_en DATETIME NOT NULL",
+        "CREATE UNIQUE INDEX ux_bloqueo_usuario ON bloqueos_revision (bloqueado_por)",
+        "ALTER TABLE bloqueos_revision ADD CONSTRAINT fk_bloqueo_usuario FOREIGN KEY (bloqueado_por) REFERENCES usuarios_revision(id) ON DELETE CASCADE",
     ]
     with engine.begin() as connection:
         for statement in statements:

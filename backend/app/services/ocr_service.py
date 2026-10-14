@@ -1,12 +1,17 @@
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import BinaryIO
+import logging
 
 from fastapi import HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
+from pytesseract import TesseractNotFoundError
 
 from backend.app.config import get_settings
 from extraer_documento import procesar_documento
+from prueba import TesseractConfigurationError
+
+logger = logging.getLogger(__name__)
 
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".pdf"}
@@ -19,7 +24,6 @@ async def save_upload_temporarily(upload: UploadFile) -> Path:
         raise HTTPException(status_code=400, detail="Formato no soportado. Usa imagen o PDF.")
 
     tmp = NamedTemporaryFile(delete=False, suffix=suffix, dir=settings.upload_dir)
-    total = 0
     try:
         with tmp as fh:
             await _copy_limited(upload, fh, settings.max_upload_bytes)
@@ -28,10 +32,6 @@ async def save_upload_temporarily(upload: UploadFile) -> Path:
         raise
     finally:
         await upload.close()
-
-    if total > settings.max_upload_bytes:
-        Path(tmp.name).unlink(missing_ok=True)
-        raise HTTPException(status_code=413, detail="El archivo supera el tamano permitido.")
     return Path(tmp.name)
 
 
@@ -59,6 +59,13 @@ async def extract_document(tipo: str, upload: UploadFile, pagina: int = 1) -> di
             settings.tesseract_cmd,
             False,
         )
+    except (TesseractNotFoundError, TesseractConfigurationError) as exc:
+        logger.exception("El servidor no pudo iniciar Tesseract")
+        raise HTTPException(
+            status_code=503,
+            detail="El motor de lectura no esta disponible en el servidor. "
+                   "Vuelve a intentar el analisis; si persiste, revisa la instalacion de Tesseract y el idioma espanol en el servidor.",
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

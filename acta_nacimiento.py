@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import re
 import sys
+from time import monotonic
 import unicodedata
 
 import cv2
@@ -23,7 +24,7 @@ except ImportError:
     zxingcpp = None
 
 from prueba import cargar_imagen, configurar_tesseract, detectar_documento_rectangular, interpretar_campo
-from archivos import es_pdf, renderizar_pagina, validar_pdf
+from archivos import es_pdf, limitar_imagen, renderizar_pagina, validar_pdf
 
 
 def normalizar(texto):
@@ -103,7 +104,7 @@ class PaginaTexto:
     def completo(self):
         return "\n".join(" ".join(p.texto for p in linea) for linea in self.lineas)
 
-    def debajo(self, nombre, izquierda=365, derecha=580):
+    def debajo(self, nombre, izquierda=365, derecha=565):
         etiqueta = self.etiqueta(nombre)
         if etiqueta is None:
             return None
@@ -122,7 +123,8 @@ def limpiar_valor(texto):
 def extraer_fila(pagina, etiquetas, arriba=33):
     """Lee valores sobre sus etiquetas y calcula columnas entre sus centros."""
     etiquetas = sorted(etiquetas, key=lambda p: p.cx)
-    limites = [40] + [(a.cx + b.cx) / 2 for a, b in zip(etiquetas, etiquetas[1:])] + [580]
+    derecha = min(565, etiquetas[-1].cx + (etiquetas[-1].cx - etiquetas[-2].cx) / 2) if len(etiquetas) > 1 else 565
+    limites = [40] + [(a.cx + b.cx) / 2 for a, b in zip(etiquetas, etiquetas[1:])] + [derecha]
     return [pagina.caja(limites[i], etiqueta.cy - arriba, limites[i + 1], etiqueta.cy - 5) for i, etiqueta in enumerate(etiquetas)]
 
 
@@ -247,34 +249,34 @@ def corregir_numero_acta_visual(roi, valor):
     return "7" + valor[1:] if evidencias_7 >= 2 else valor
 
 
-def ocr_celda_registro(imagen, caja, campo, estricto=True):
+def ocr_celda_registro(imagen, caja, campo, estricto=True, limite=None):
     roi = recortar_normalizado(imagen, caja)
     if roi.size == 0:
         return None
     gris = normalizar_iluminacion(roi)
     whitelist = "0123456789" if campo in ("oficialia", "libro", "numero_acta") else "0123456789/"
     lecturas = []
-    for escala in (6, 8, 10):
-        ampliada = cv2.resize(gris, None, fx=escala, fy=escala, interpolation=cv2.INTER_CUBIC)
-        variantes = [
-            cv2.threshold(ampliada, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
-            cv2.adaptiveThreshold(ampliada, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 9),
-            cv2.threshold(ampliada, 170, 255, cv2.THRESH_BINARY)[1],
-        ]
-        for variante in variantes:
-            variante = cv2.copyMakeBorder(variante, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255)
-            texto = pytesseract.image_to_string(variante, lang="spa", config=f"--oem 3 --psm 7 -c tessedit_char_whitelist={whitelist}", timeout=20)
-            valor = limpiar_por_patron(texto, campo, estricto=estricto)
-            if valor:
-                lecturas.append(valor)
-    if not lecturas:
-        return None
-    conteo = Counter(lecturas)
-    valor, repeticiones = conteo.most_common(1)[0]
-    if repeticiones >= 2:
-        if campo == "numero_acta":
-            valor = corregir_numero_acta_visual(roi, valor)
-        return valor
+    escala = min(4.0, 900 / gris.shape[1])
+    ampliada = cv2.resize(gris, None, fx=escala, fy=escala, interpolation=cv2.INTER_CUBIC)
+    variantes = [
+        cv2.threshold(ampliada, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
+        cv2.adaptiveThreshold(ampliada, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 9),
+        cv2.threshold(ampliada, 170, 255, cv2.THRESH_BINARY)[1],
+    ]
+    for variante in variantes:
+        restante = limite - monotonic() if limite is not None else 4.0
+        if restante <= 0:
+            return None
+        variante = cv2.copyMakeBorder(variante, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255)
+        try:
+            texto = pytesseract.image_to_string(variante, lang="spa", config=f"--oem 3 --psm 7 -c tessedit_char_whitelist={whitelist}", timeout=min(4.0, restante))
+        except RuntimeError:
+            return None
+        valor = limpiar_por_patron(texto, campo, estricto=estricto)
+        if valor:
+            lecturas.append(valor)
+            if lecturas.count(valor) >= 2:
+                return corregir_numero_acta_visual(roi, valor) if campo == "numero_acta" else valor
     return None
 
 
@@ -308,17 +310,95 @@ def extraer_valores_registro(pagina):
     return valores
 
 
-def extraer_registro_desde_imagen(imagen):
+def ocr_celda_aislada(imagen, caja, campo, limite):
+    roi = recortar_normalizado(imagen, caja)
+    gris = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    binaria = cv2.threshold(gris, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+    _, _, componentes, _ = cv2.connectedComponentsWithStats(binaria)
+    letras = [c for c in componentes[1:] if c[3] > .25 * gris.shape[0] and c[2] < .5 * gris.shape[1]
+              and c[4] > 3 and c[0] > 0 and c[0] + c[2] < gris.shape[1]]
+    if not letras:
+        return None
+    x0, y0 = min(c[0] for c in letras), min(c[1] for c in letras)
+    x1, y1 = max(c[0] + c[2] for c in letras), max(c[1] + c[3] for c in letras)
+    # Recortar el texto conserva sus trazos originales y excluye la cuadricula.
+    gris = gris[max(0, y0 - 1):y1 + 1, max(0, x0 - 1):x1 + 1]
+    escala = min(4.0, 900 / gris.shape[1])
+    gris = cv2.resize(gris, None, fx=escala, fy=escala, interpolation=cv2.INTER_CUBIC)
+    otsu = cv2.threshold(gris, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    lecturas = Counter()
+    for psm, variante in ((13, gris), (13, otsu), (7, otsu), (7, gris)):
+        restante = limite - monotonic()
+        if restante <= 0:
+            break
+        variante = cv2.copyMakeBorder(variante, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
+        try:
+            texto = pytesseract.image_to_string(variante, lang="spa", config=f"--psm {psm}", timeout=min(3.0, restante))
+        except RuntimeError:
+            break
+        valor = limpiar_por_patron(texto, campo, estricto=True)
+        if valor and (campo != "libro" or valor.isdigit()) and registro_valido(campo, valor, estricto=True):
+            lecturas[valor] += 1
+            if lecturas[valor] >= 2:
+                return valor
+    return None
+
+
+def detectar_celdas_registro(imagen):
+    """Localiza la cuadricula impresa sin asumir posiciones de sus valores."""
+    alto, ancho = imagen.shape[:2]
+    gris = cv2.cvtColor(imagen, cv2.COLOR_BGR2GRAY)
+    binaria = cv2.adaptiveThreshold(gris, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 9)
+    contornos, _ = cv2.findContours(binaria, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    cajas = []
+    for contorno in contornos:
+        x, y, w, h = cv2.boundingRect(contorno)
+        caja = (x * 612 / ancho, y * 792 / alto, w * 612 / ancho, h * 792 / alto)
+        if 330 < caja[0] < 580 and 140 < caja[1] < 280 and cv2.contourArea(contorno) / (w * h) > .65:
+            cajas.append(caja)
+    for tx, ty, tw, th in sorted(cajas, key=lambda c: c[2] * c[3], reverse=True):
+        if not (150 < tw < 260 and 20 < th < 50):
+            continue
+        interiores = sorted([c for c in cajas if 20 < c[2] < 100 and 5 < c[3] < th and tx < c[0] < tx + tw and ty < c[1] and c[0] + c[2] <= tx + tw and c[1] + c[3] <= ty + th], key=lambda c: c[0])
+        columnas = []
+        for caja in interiores:
+            if not columnas or abs(caja[0] - columnas[-1][0][0]) > 5:
+                columnas.append([])
+            columnas[-1].append(caja)
+        if len(columnas) != 4:
+            continue
+        inferiores = [max(columna, key=lambda c: c[1]) for columna in columnas]
+        altura = float(np.median([c[3] for c in inferiores]))
+        return {
+            campo: (x + .8, max(y, y + h - altura) + .8, x + w - .8, y + h - .8)
+            for campo, (x, y, w, h) in zip(("oficialia", "fecha_registro", "libro", "numero_acta"), inferiores)
+        }
+    return {}
+
+
+def extraer_registro_desde_imagen(imagen, existentes=None):
+    limite = monotonic() + 10.0
+    celdas_detectadas = detectar_celdas_registro(imagen)
+    if celdas_detectadas:
+        return {campo: ocr_celda_aislada(imagen, caja, campo, limite) for campo, caja in celdas_detectadas.items()}
+    existentes = existentes or {}
     candidatos_por_campo = {"oficialia": [], "fecha_registro": [], "libro": [], "numero_acta": []}
     cajas = (
         (345, 185, 592, 270),
         (350, 195, 590, 290),
         (360, 190, 585, 255),
     )
+    mejores = {
+        campo: existentes.get(campo) if registro_valido(campo, existentes.get(campo), estricto=True) else None
+        for campo in candidatos_por_campo
+    }
     for caja in cajas:
-        palabras = []
-        for psm in (6, 11, 7):
-            palabras.extend(ocr_region(imagen, caja, psm, "tabla"))
+        if all(mejores.values()) or monotonic() >= limite:
+            break
+        try:
+            palabras = ocr_region(imagen, caja, 6, "tabla", timeout=min(3.0, limite - monotonic()))
+        except RuntimeError:
+            break
         pagina = PaginaTexto(palabras)
         candidatos = extraer_valores_registro(pagina)
         por_columnas = extraer_registro_por_columnas(palabras, y0=caja[1], y1=caja[3], estricto=True)
@@ -326,7 +406,9 @@ def extraer_registro_desde_imagen(imagen):
             for valor in (candidatos.get(campo), por_columnas.get(campo)):
                 if valor and registro_valido(campo, valor, estricto=True):
                     candidatos_por_campo[campo].append(valor)
-    mejores = {campo: None for campo in candidatos_por_campo}
+            lecturas = candidatos_por_campo[campo]
+            if lecturas and Counter(lecturas).most_common(1)[0][1] >= 2:
+                mejores[campo] = Counter(lecturas).most_common(1)[0][0]
     for campo, lecturas in candidatos_por_campo.items():
         if lecturas:
             valor, repeticiones = Counter(lecturas).most_common(1)[0]
@@ -339,7 +421,16 @@ def extraer_registro_desde_imagen(imagen):
         "numero_acta": [(520, 220, 592, 265), (530, 225, 590, 258), (540, 228, 585, 255)],
     }
     for campo, cajas_campo in celdas.items():
-        lecturas = [valor for caja in cajas_campo if (valor := ocr_celda_registro(imagen, caja, campo))]
+        if mejores[campo] and campo != "numero_acta":
+            continue
+        lecturas = []
+        for caja in cajas_campo:
+            if monotonic() >= limite:
+                break
+            valor = ocr_celda_registro(imagen, caja, campo, limite=limite)
+            if valor:
+                lecturas.append(valor)
+                break
         if lecturas:
             valor, _ = Counter(lecturas).most_common(1)[0]
             if registro_valido(campo, valor, estricto=(campo != "libro")):
@@ -384,6 +475,9 @@ def interpretar_acta(pagina):
         },
     }
     datos["registro"].update(extraer_valores_registro(pagina))
+    identificador = re.search(r"\b\d{20}\b", datos["identificador_electronico"] or "")
+    datos["identificador_electronico"] = identificador[0] if identificador else None
+    datos["curp"] = extraer_curp_validada(datos["curp"])
 
     persona = dict.fromkeys(("nombres", "primer_apellido", "segundo_apellido", "nombre_completo", "sexo", "fecha_nacimiento", "lugar_nacimiento"))
     filiacion = []
@@ -410,6 +504,10 @@ def interpretar_acta(pagina):
             continue
         valores = extraer_fila(pagina, etiquetas)
         fila = {campo: limpiar_valor(valor) for campo, valor in zip(campos, valores)}
+        for campo in campos[:3]:
+            fila[campo] = " ".join(re.findall(r"[^\W\d_]+(?:[-'][^\W\d_]+)*", fila[campo] or "")) or None
+        if "curp" in fila:
+            fila["curp"] = extraer_curp_validada(fila["curp"])
         fila["nombre_completo"] = " ".join(fila[c] for c in campos[:3] if fila[c]) or None
         if es_filiacion:
             filiacion.append(fila)
@@ -458,7 +556,7 @@ def interpretar_acta(pagina):
         if codigo:
             datos["codigo_verificacion"] = codigo[0]
         else:
-            advertencias.append("El codigo de verificacion no tiene un formato numerico reconocido.")
+            datos["codigo_verificacion"] = None
     datos["leyenda_validacion"] = limpiar_valor(pagina.caja(40, 740, 580, 768))
     enlace = re.search(r"https?://[^\s,]+", datos["leyenda_validacion"] or "")
     datos["url_verificacion"] = enlace[0] if enlace else None
@@ -479,7 +577,85 @@ def interpretar_acta(pagina):
             advertencias.append(f"Revisar {nombre}: formato de fecha no reconocido.")
     if not filiacion:
         advertencias.append("No se pudieron separar los datos de filiación.")
+    else:
+        for index, fila in enumerate(filiacion):
+            if not fila.get("nombre_completo"):
+                advertencias.append(f"No se pudo extraer filiacion.{index}.nombre_completo.")
     return datos, advertencias
+
+
+def extraer_curp_validada(texto):
+    candidatos = re.findall(r"(?<![A-Z0-9])[A-Z0-9]{18}(?![A-Z0-9])", (texto or "").upper())
+    validos = {valor for candidato in candidatos if (valor := interpretar_campo("curp", candidato))}
+    return next(iter(validos)) if len(validos) == 1 else None
+
+
+def completar_etiquetas_filiacion(imagen, pagina):
+    for nombre in pagina.buscar("Nombre(s)"):
+        titulos = ("Nombre(s)", "Primer Apellido", "Segundo Apellido", "Nacionalidad", "CURP")
+        presentes = [any(abs(p.cy - nombre.cy) < 8 for p in pagina.buscar(t)) for t in titulos]
+        valores = pagina.caja(40, nombre.cy - 33, 565, nombre.cy - 5)
+        if not presentes[3] or (all(presentes) and valores):
+            continue
+        caja = (40, nombre.cy - (33 if all(presentes) else 8), 565, nombre.cy + 8)
+        try:
+            nuevas = ocr_region(imagen, caja, 6, "tabla")
+        except RuntimeError:
+            continue
+        propuesta = PaginaTexto(nuevas)
+        if all(propuesta.buscar(t) for t in titulos):
+            pagina = PaginaTexto([p for p in pagina.palabras if not (caja[0] <= p.cx <= caja[2] and caja[1] <= p.cy <= caja[3])] + nuevas)
+    return pagina
+
+
+def recuperar_codigos_numericos(imagen, pagina):
+    for etiqueta, izquierda, derecha, minimo, maximo in (
+        ("Identificador Electronico", 365, 565, 20, 20),
+        ("Codigo de Verificacion", 185, 315, 15, 30),
+    ):
+        ancla = pagina.etiqueta(etiqueta)
+        if ancla is None:
+            continue
+        patron = rf"(?<!\d)\d{{{minimo},{maximo}}}(?!\d)"
+        if re.search(patron, pagina.debajo(etiqueta, izquierda, derecha) or ""):
+            continue
+        caja = (izquierda, ancla.cy + 5, derecha, ancla.cy + 25)
+        try:
+            nuevas = ocr_region(imagen, caja, 6, "tabla")
+        except RuntimeError:
+            continue
+        validas = [p for p in nuevas if re.fullmatch(rf"\d{{{minimo},{maximo}}}", p.texto) and p.confianza >= 70]
+        if len(validas) == 1:
+            pagina = PaginaTexto([p for p in pagina.palabras if not (caja[0] <= p.cx <= caja[2] and caja[1] <= p.cy <= caja[3])] + validas)
+    return pagina
+
+
+def aviso_legible(aviso):
+    etiquetas = {
+        "identificador_electronico": "el identificador electronico (numero de 20 digitos en la parte superior derecha)",
+        "codigo_verificacion": "el codigo de verificacion (numero debajo del QR grande, junto al codigo de barras)",
+        "curp": "la CURP de la persona registrada",
+        "registro.entidad": "el estado de registro",
+        "registro.municipio": "el municipio de registro",
+        "registro.oficialia": "el numero de oficialia",
+        "registro.fecha_registro": "la fecha de registro del acta",
+        "registro.libro": "el numero de libro",
+        "registro.numero_acta": "el numero de acta",
+        "persona_registrada.nombres": "los nombres de la persona registrada",
+        "persona_registrada.primer_apellido": "el primer apellido de la persona registrada",
+        "persona_registrada.sexo": "el sexo de la persona registrada",
+        "persona_registrada.fecha_nacimiento": "la fecha de nacimiento",
+        "filiacion.0.nombre_completo": "el nombre del padre (primera fila de datos de filiacion)",
+        "filiacion.1.nombre_completo": "el nombre de la madre (segunda fila de datos de filiacion)",
+    }
+    prefijo = "No se pudo extraer "
+    if aviso.startswith(prefijo):
+        campo = aviso[len(prefijo):].rstrip(".")
+        if campo in etiquetas:
+            return f"No se pudo leer con claridad {etiquetas[campo]}. Revisa ese dato en el documento; los demas datos se aplicaron."
+    if aviso == "No se pudieron separar los datos de filiación.":
+        return "No se pudieron leer los nombres de los padres en la seccion de datos de filiacion. Capturalos manualmente."
+    return aviso
 
 
 def imagen_pagina(pagina):
@@ -493,6 +669,7 @@ def texto_pdf(pagina):
 
 def preparar_foto(imagen):
     """Rectifica una hoja grande y convexa; conserva el original si no es clara."""
+    imagen = limitar_imagen(imagen)
     rectificada = detectar_documento_rectangular(imagen, .65, .9, area_min=0.25)
     if rectificada is not None:
         return rectificada
@@ -542,7 +719,7 @@ def texto_ocr(imagen):
     gris = cv2.resize(gris, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
     candidatos = []
     for psm in (11, 6):
-        resultado = pytesseract.image_to_data(gris, lang="spa", config=f"--oem 3 --psm {psm}", output_type=pytesseract.Output.DICT, timeout=90)
+        resultado = pytesseract.image_to_data(gris, lang="spa", config=f"--oem 3 --psm {psm}", output_type=pytesseract.Output.DICT, timeout=35)
         palabras = []
         for i, texto in enumerate(resultado["text"]):
             if not texto.strip():
@@ -556,9 +733,13 @@ def texto_ocr(imagen):
     # La tabla se localiza por sus etiquetas, no por un recuadro fijo.
     anclas = [pagina.etiqueta(t) for t in ("Oficialia", "Fecha de Registro", "Libro", "Numero de Acta")]
     anclas = [p for p in anclas if p]
-    if len(anclas) >= 2 and max(p.cy for p in anclas) - min(p.cy for p in anclas) < 8:
+    registro = extraer_valores_registro(pagina)
+    if not all(registro_valido(campo, valor, estricto=True) for campo, valor in registro.items()) and len(anclas) >= 2 and max(p.cy for p in anclas) - min(p.cy for p in anclas) < 8:
         caja = (max(0, min(p.x0 for p in anclas) - 12), max(0, min(p.y0 for p in anclas) - 4), min(612, max(p.x1 for p in anclas) + 12), min(792, max(p.y1 for p in anclas) + 20))
-        nuevas = ocr_region(imagen, caja, 6, "tabla")
+        try:
+            nuevas = ocr_region(imagen, caja, 6, "tabla")
+        except RuntimeError:
+            return pagina
         x0, y0, x1, y1 = caja
         reemplazo = PaginaTexto([p for p in pagina.palabras if not (x0 <= p.cx <= x1 and y0 <= p.cy <= y1)] + nuevas)
         if nuevas and puntuar_lectura(reemplazo) >= puntuar_lectura(pagina):
@@ -566,7 +747,7 @@ def texto_ocr(imagen):
     return pagina
 
 
-def ocr_region(imagen, caja, psm, tipo):
+def ocr_region(imagen, caja, psm, tipo, timeout=4.0):
     alto, ancho = imagen.shape[:2]
     x0, y0, x1, y1 = caja
     roi = imagen[round(y0 * alto / 792):round(y1 * alto / 792), round(x0 * ancho / 612):round(x1 * ancho / 612)]
@@ -585,7 +766,7 @@ def ocr_region(imagen, caja, psm, tipo):
         gris[cv2.bitwise_or(horizontales, verticales) > 0] = 255
     ancho_roi, alto_roi = gris.shape[1], gris.shape[0]
     gris = cv2.copyMakeBorder(gris, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
-    resultado = pytesseract.image_to_data(gris, lang="spa", config=f"--oem 3 --psm {psm}", output_type=pytesseract.Output.DICT, timeout=30)
+    resultado = pytesseract.image_to_data(gris, lang="spa", config=f"--oem 3 --psm {psm}", output_type=pytesseract.Output.DICT, timeout=timeout)
     palabras = []
     for i, texto in enumerate(resultado["text"]):
         if not texto.strip():
@@ -758,46 +939,33 @@ def consultar_url_qr(url):
         return {"url": str(respuesta.url), "status_code": respuesta.status_code, "texto": texto[:12000]}
 
 
-def decodificar_qr(roi):
+def decodificar_qr(roi, limite=None):
     if roi is None or roi.size == 0:
         return "", False
+    if limite is not None and monotonic() >= limite:
+        return "", False
+    roi = limitar_imagen(roi, 1000)
     if zxingcpp is not None:
         try:
             for imagen in (roi, cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)):
                 codigos = zxingcpp.read_barcodes(imagen, formats=zxingcpp.BarcodeFormat.QRCode)
                 if codigos:
                     return codigos[0].text, True
+            return "", False
         except Exception:
             pass
     detector = cv2.QRCodeDetector()
-    intentos = []
     gris_base = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     gris_base = cv2.copyMakeBorder(gris_base, 18, 18, 18, 18, cv2.BORDER_CONSTANT, value=255)
-    for escala in (1.0, 1.6, 2.4, 3.2, 4.0):
-        gris = cv2.resize(gris_base, None, fx=escala, fy=escala, interpolation=cv2.INTER_CUBIC)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gris)
-        desenfocada = cv2.GaussianBlur(clahe, (0, 0), 1.0)
-        nitida = cv2.addWeighted(clahe, 1.8, desenfocada, -0.8, 0)
-        variantes = [
-            gris,
-            clahe,
-            nitida,
-            cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
-            cv2.adaptiveThreshold(clahe, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 35, 9),
-        ]
-        for variante in variantes:
-            intentos.append(cv2.cvtColor(variante, cv2.COLOR_GRAY2BGR))
-            intentos.append(cv2.cvtColor(cv2.rotate(variante, cv2.ROTATE_90_CLOCKWISE), cv2.COLOR_GRAY2BGR))
-            intentos.append(cv2.cvtColor(cv2.rotate(variante, cv2.ROTATE_180), cv2.COLOR_GRAY2BGR))
-            intentos.append(cv2.cvtColor(cv2.rotate(variante, cv2.ROTATE_90_COUNTERCLOCKWISE), cv2.COLOR_GRAY2BGR))
     detectado = False
-    for imagen in intentos:
-        contenido, puntos, _ = detector.detectAndDecode(imagen)
-        if not contenido and hasattr(detector, "detectAndDecodeCurved"):
-            try:
-                contenido, puntos, _ = detector.detectAndDecodeCurved(imagen)
-            except cv2.error:
-                pass
+    # OpenCV ya detecta rotaciones; no generar cien copias de cada recorte.
+    for imagen in (gris_base, cv2.threshold(gris_base, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]):
+        if limite is not None and monotonic() >= limite:
+            break
+        try:
+            contenido, puntos, _ = detector.detectAndDecode(imagen)
+        except cv2.error:
+            continue
         detectado = detectado or puntos is not None
         if contenido:
             return contenido, True
@@ -843,13 +1011,26 @@ def candidatos_qr_por_contorno(imagen):
 
 
 def leer_qr(imagen):
+    limite = monotonic() + 4.0
     alto, ancho = imagen.shape[:2]
     codigos_por_tipo = {}
-    detector = cv2.QRCodeDetector()
-    try:
-        detectados, contenidos, puntos, _ = detector.detectAndDecodeMulti(imagen)
-    except cv2.error:
-        detectados, contenidos, puntos = False, (), None
+    detectados, contenidos, puntos = False, (), None
+    if zxingcpp is not None:
+        try:
+            for codigo in zxingcpp.read_barcodes(imagen, formats=zxingcpp.BarcodeFormat.QRCode):
+                centro = (codigo.position.top_left.x + codigo.position.bottom_right.x) / 2
+                tipo = "firma" if centro < ancho * .45 else "datos"
+                codigos_por_tipo[tipo] = {"tipo": tipo, "detectado": True, "contenido": codigo.text, "campos": interpretar_qr(codigo.text)}
+        except Exception:
+            pass
+    else:
+        pequena = limitar_imagen(imagen, 1400)
+        try:
+            detectados, contenidos, puntos, _ = cv2.QRCodeDetector().detectAndDecodeMulti(pequena)
+            if puntos is not None:
+                puntos = puntos * (ancho / pequena.shape[1])
+        except cv2.error:
+            pass
     if detectados and puntos is not None:
         for contenido, poligono in zip(contenidos, puntos):
             xs = poligono[:, 0]
@@ -857,7 +1038,7 @@ def leer_qr(imagen):
             x0, y0, x1, y1 = max(0, int(xs.min()) - 12), max(0, int(ys.min()) - 12), min(ancho, int(xs.max()) + 12), min(alto, int(ys.max()) + 12)
             tipo = "firma" if (x0 + x1) / 2 < ancho * .45 else "datos"
             if not contenido:
-                contenido, _ = decodificar_qr(imagen[y0:y1, x0:x1])
+                contenido, _ = decodificar_qr(imagen[y0:y1, x0:x1], limite=limite)
             codigos_por_tipo[tipo] = {"tipo": tipo, "detectado": True, "contenido": contenido or None, "campos": interpretar_qr(contenido) if contenido else {}}
     regiones = {
         "firma": [(39, 590, 190, 739), (30, 580, 210, 740)],
@@ -868,14 +1049,18 @@ def leer_qr(imagen):
             continue
         contenido, detectado = "", False
         for x0, y0, x1, y1 in cajas:
+            if monotonic() >= limite:
+                break
             roi = imagen[round(y0 * alto / 792):round(y1 * alto / 792), round(x0 * ancho / 612):round(x1 * ancho / 612)]
-            contenido, visto = decodificar_qr(roi)
+            contenido, visto = decodificar_qr(roi, limite=limite)
             detectado = detectado or visto
             if contenido:
                 break
         codigos_por_tipo[tipo] = {"tipo": tipo, "detectado": codigos_por_tipo.get(tipo, {}).get("detectado", False) or detectado, "contenido": contenido or codigos_por_tipo.get(tipo, {}).get("contenido"), "campos": interpretar_qr(contenido) if contenido else codigos_por_tipo.get(tipo, {}).get("campos", {})}
     for x0, y0, x1, y1 in candidatos_qr_por_contorno(imagen):
-        contenido, detectado = decodificar_qr(imagen[y0:y1, x0:x1])
+        if monotonic() >= limite or all(codigos_por_tipo.get(t, {}).get("contenido") for t in ("firma", "datos")):
+            break
+        contenido, detectado = decodificar_qr(imagen[y0:y1, x0:x1], limite=limite)
         if not contenido:
             continue
         tipo = "firma" if (x0 + x1) / 2 < ancho * .45 else "datos"
@@ -958,7 +1143,7 @@ def extraer_acta(ruta, tesseract=None, forzar_ocr=False):
                 configurar_tesseract(tesseract)
                 ocr_configurado = True
             imagen = preparar_foto(obtener_imagen())
-            pagina = texto_ocr(imagen)
+            pagina = recuperar_codigos_numericos(imagen, completar_etiquetas_filiacion(imagen, texto_ocr(imagen)))
             metodo = "ocr"
         paginas.append({"pagina": numero, "metodo": metodo, "texto_completo": pagina.completo()})
         if es_acta(pagina):
@@ -967,14 +1152,12 @@ def extraer_acta(ruta, tesseract=None, forzar_ocr=False):
                 imagen = obtener_imagen()
             if metodo == "ocr":
                 try:
-                    registro_imagen = extraer_registro_desde_imagen(imagen)
+                    registro_imagen = extraer_registro_desde_imagen(imagen, datos["registro"])
                 except (RuntimeError, pytesseract.TesseractError, pytesseract.TesseractNotFoundError):
                     registro_imagen = {}
                     agregar_aviso(avisos, "No se pudo aplicar la relectura fina del registro; revisar los campos de oficialia, fecha, libro y numero de acta.")
                 for campo, valor in registro_imagen.items():
-                    if valor and registro_valido(campo, valor, estricto=(campo != "libro")):
-                        if campo == "numero_acta" or not registro_valido(campo, datos["registro"].get(campo), estricto=(campo != "libro")):
-                            datos["registro"][campo] = valor
+                    datos["registro"][campo] = valor if registro_valido(campo, valor, estricto=(campo != "libro")) else None
                 for campo in ("oficialia", "fecha_registro", "numero_acta"):
                     if not registro_valido(campo, datos["registro"].get(campo), estricto=True):
                         datos["registro"][campo] = None
@@ -987,7 +1170,7 @@ def extraer_acta(ruta, tesseract=None, forzar_ocr=False):
                 curp_qr = qr["campos"].get("curp")
                 if curp_qr and datos["curp"] and curp_qr != datos["curp"]:
                     avisos.append("La CURP del QR no coincide con el texto del acta.")
-            candidatos.append({"pagina": numero, "metodo": metodo, "datos": datos, "advertencias": avisos})
+            candidatos.append({"pagina": numero, "metodo": metodo, "datos": datos, "advertencias": [aviso_legible(aviso) for aviso in avisos]})
 
     formato_pdf = es_pdf(ruta)
     if formato_pdf:

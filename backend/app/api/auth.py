@@ -57,6 +57,8 @@ def login(payload: LoginPayload, db: Session = Depends(get_db)) -> dict:
 
     if usuario is None or not verify_password(payload.password, usuario.password_hash):
         raise HTTPException(status_code=401, detail="Usuario o contrasena incorrectos.")
+    from backend.app.services.revision_lock_service import release_user_locks
+    release_user_locks(db, usuario.username)
 
     usuario.session_token = token_urlsafe(32)
     usuario.ultimo_acceso = datetime.utcnow()
@@ -71,6 +73,17 @@ def login(payload: LoginPayload, db: Session = Depends(get_db)) -> dict:
 @router.get("/me")
 def me(operator: str = Depends(get_current_operator)) -> dict:
     return {"username": operator}
+
+
+@router.post("/logout")
+def logout(db: Session = Depends(get_db), operator: str = Depends(get_current_operator)) -> dict:
+    from backend.app.services.revision_lock_service import release_user_locks
+    user = db.scalar(select(UsuarioRevision).where(UsuarioRevision.username == operator).with_for_update())
+    release_user_locks(db, operator)
+    if user:
+        user.session_token = None
+    db.commit()
+    return {"sesion_cerrada": True}
 
 
 def verify_password(password: str, password_hash: str) -> bool:

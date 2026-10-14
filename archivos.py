@@ -34,7 +34,16 @@ def leer_imagen(ruta):
     imagen = cv2.imdecode(np.frombuffer(contenido, dtype=np.uint8), cv2.IMREAD_COLOR)
     if imagen is None:
         raise ValueError("Archivo no compatible. Selecciona una imagen JPG/PNG o un PDF válido.")
-    return imagen
+    return limitar_imagen(imagen)
+
+
+def limitar_imagen(imagen, max_lado=2600):
+    alto, ancho = imagen.shape[:2]
+    lado_mayor = max(alto, ancho)
+    if lado_mayor <= max_lado:
+        return imagen
+    escala = max_lado / lado_mayor
+    return cv2.resize(imagen, (round(ancho * escala), round(alto * escala)), interpolation=cv2.INTER_AREA)
 
 
 def cargar_pagina(ruta, pagina=1):

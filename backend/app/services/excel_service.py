@@ -650,6 +650,8 @@ def valid_year(value) -> str:
 
 
 def format_address(address: dict) -> str:
+    if address.get("completo") is not None:
+        return str(address["completo"])
     parts = [
         address.get("calle"),
         f"No. {address.get('numeroExterior')}" if address.get("numeroExterior") else "",
